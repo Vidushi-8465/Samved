@@ -66,6 +66,7 @@ export default function LoginScreen() {
       setManager(profile);
       router.replace('/(dashboard)/overview');
     } catch (err: any) {
+      console.log(err);
       const msg = err.message || '';
       if (msg.includes('Access denied')) {
         setError(T.login.error.access);
