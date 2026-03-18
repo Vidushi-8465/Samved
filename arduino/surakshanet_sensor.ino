@@ -1,5 +1,5 @@
 /*
- * SurakshaNet — ESP32 Sensor Node
+ * SMC LiveMonitor — ESP32 Sensor Node
  * Solapur Municipal Corporation
  * 
  * Sensors:
@@ -117,7 +117,7 @@ void setup() {
     Serial.println("MPU6050 ready");
   }
 
-  Serial.println("SurakshaNet sensor node ready!");
+  Serial.println("SMC LiveMonitor sensor node ready!");
   Serial.println("Worker: " + String(WORKER_ID) + " | Manhole: " + String(MANHOLE_ID));
 }
 

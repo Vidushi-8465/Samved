@@ -473,14 +473,14 @@ export default function OverviewScreen() {
       <SOSModal alerts={alerts} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
 
       {/* TOP BAR */}
-      <View style={main.topBar}>
+      <View style={[main.topBar, isTablet ? main.topBarRow : main.topBarCol]}>
         <View style={main.topLeft}>
           <View style={main.logoBox}>
             <MaterialCommunityIcons name="shield-check" size={20} color="#FF6B00" />
           </View>
-          <View>
-            <Text style={main.topTitle}>Solapur Municipal Corporation</Text>
-            <Text style={main.topSub}>
+          <View style={main.topLeftText}>
+            <Text numberOfLines={1} ellipsizeMode="tail" style={main.topTitle}>Solapur Municipal Corporation</Text>
+            <Text numberOfLines={1} ellipsizeMode="tail" style={main.topSub}>
               Smart Sewer Safety Monitoring · {s?.manholeId ?? '—'}, {s?.zone ? s.zone.charAt(0).toUpperCase() + s.zone.slice(1) + ' Zone' : '—'}
             </Text>
           </View>
@@ -494,11 +494,11 @@ export default function OverviewScreen() {
             <Text style={main.dtLabel}>TIME</Text>
             <Text style={main.dtVal}>{timeStr}</Text>
           </View>
-          <View style={main.liveBadge}>
+          <View style={[main.liveBadge, main.topRightItem]}>
             <View style={main.liveDot} />
             <Text style={main.liveText}>LIVE</Text>
           </View>
-          <TouchableOpacity style={main.logoutBtn} onPress={handleLogout}>
+          <TouchableOpacity style={[main.logoutBtn, main.topRightItem]} onPress={handleLogout}>
             <MaterialCommunityIcons name="logout" size={13} color="#fff" />
             <Text style={main.logoutText}>Logout</Text>
           </TouchableOpacity>
@@ -527,7 +527,7 @@ export default function OverviewScreen() {
                 style={[main.wTab, isSel && main.wTabActive, { borderColor: STATUS_COLOR[ws] }]}
                 onPress={() => setSelectedWorkerId(w.id)}>
                 <View style={[main.wDot, { backgroundColor: STATUS_COLOR[ws] }]} />
-                <Text style={[main.wTabTxt, isSel && { color: '#1A3C6E', fontFamily: 'Poppins_600SemiBold' }]}>
+                <Text numberOfLines={1} ellipsizeMode="tail" style={[main.wTabTxt, isSel && { color: '#1A3C6E', fontFamily: 'Poppins_600SemiBold' }] }>
                   {w.name.split(' ')[0]}
                 </Text>
                 <Text style={main.wTabId}>{sensors[w.id]?.manholeId ?? '—'}</Text>
@@ -584,12 +584,16 @@ export default function OverviewScreen() {
 
 const main = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#F0F4F8' },
-  topBar: { backgroundColor: '#1A3C6E', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: '#FF6B00' },
-  topLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  topBar: { backgroundColor: '#1A3C6E', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: '#FF6B00' },
+  topBarRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  topBarCol: { flexDirection: 'column', gap: 10 },
+  topLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, flexWrap: 'wrap' },
+  topLeftText: { flex: 1, minWidth: 0 },
   logoBox: { width: 36, height: 36, borderRadius: 8, backgroundColor: 'rgba(255,107,0,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,107,0,0.4)' },
-  topTitle: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold' },
-  topSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular' },
-  topRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  topTitle: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
+  topSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', flexShrink: 1 },
+  topRight: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' },
+  topRightItem: { marginLeft: 10 },
   dtBox: { alignItems: 'center' },
   dtLabel: { color: '#8899AA', fontSize: 8, fontFamily: 'Poppins_400Regular', letterSpacing: 0.5 },
   dtVal: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold' },
@@ -601,10 +605,10 @@ const main = StyleSheet.create({
   sosBanner: { backgroundColor: '#E74C3C', flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 7 },
   sosBannerText: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold', flex: 1 },
   workerBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', maxHeight: 50 },
-  wTab: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
+  wTab: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC', minWidth: 90, maxWidth: 120 },
   wTabActive: { backgroundColor: '#EBF5FB', borderColor: '#1A3C6E' },
   wDot: { width: 7, height: 7, borderRadius: 4 },
-  wTabTxt: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  wTabTxt: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: '#64748B', flexShrink: 1 },
   wTabId: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#94A3B8' },
   content: { padding: 12, paddingBottom: 40, gap: 12 },
   secLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B', letterSpacing: 0.8 },

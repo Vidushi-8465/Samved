@@ -1,11 +1,11 @@
 // constants/translations.ts
 export const t = {
   en: {
-    appName: 'SurakshaNet',
+    appName: 'SMC LiveMonitor',
     tagline: 'Protecting Those Who Protect Our City',
     municipality: 'Solapur Municipal Corporation',
     home: {
-      welcome: 'Welcome to SurakshaNet',
+      welcome: 'Welcome to SMC LiveMonitor',
       subtitle: 'Real-time Safety Monitoring for Sanitation Workers',
       stats: {
         workers: 'Workers On Duty',

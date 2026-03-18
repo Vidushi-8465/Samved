@@ -38,7 +38,7 @@ export default function RootLayout() {
   if (!fontsLoaded && !fontError) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A3C6E' }}>
-        <Text style={{ color: 'white', fontSize: 16 }}>Loading SurakshaNet...</Text>
+        <Text style={{ color: 'white', fontSize: 16 }}>Loading SMC LiveMonitor...</Text>
       </View>
     );
   }

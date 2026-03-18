@@ -1,4 +1,4 @@
-# 🛡️ SurakshaNet — Solapur Sanitation Worker Safety App
+# 🛡️ SMC LiveMonitor — Solapur Sanitation Worker Safety App
 
 Real-time IoT safety monitoring app for sanitation workers of **Solapur Municipal Corporation**.
 
@@ -78,7 +78,7 @@ npm install -g expo-cli eas-cli
 ### C) Get Firebase Config
 1. Go to **Project Settings** (⚙️ icon)
 2. Under "Your apps" → Click **</>** (Web app icon)
-3. App nickname: `surakshanet-web`
+3. App nickname: `smc-livemonitor-web`
 4. Click "Register app"
 5. **Copy the firebaseConfig object**
 
@@ -87,11 +87,11 @@ npm install -g expo-cli eas-cli
 ## STEP 3 — Project Setup
 
 ### A) Download/Clone the project
-Place all these files in a folder called `surakshanet`.
+Place all these files in a folder called `smc-livemonitor`.
 
 ### B) Install dependencies
 ```bash
-cd surakshanet
+cd smc-livemonitor
 npm install
 ```
 Also install Google Fonts:
@@ -213,7 +213,7 @@ The app will **automatically** update when new sensor data arrives.
 ## 📁 Project File Structure
 
 ```
-surakshanet/
+smc-livemonitor/
 │
 ├── app/                          # All screens (Expo Router)
 │   ├── _layout.tsx               # Root layout (fonts, splash)

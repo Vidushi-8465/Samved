@@ -130,7 +130,7 @@ export default function LoginScreen() {
                 <MaterialCommunityIcons name="shield-account" size={40} color={Colors.accent} />
               </View>
             </View>
-            <Text style={styles.appName}>SurakshaNet</Text>
+            <Text style={styles.appName}>SMC LiveMonitor</Text>
             <Text style={styles.subName}>{T.login.subtitle}</Text>
             <View style={styles.dividerRow}>
               <View style={styles.dividerLine} />
@@ -157,7 +157,7 @@ export default function LoginScreen() {
                 />
                 <TextInput
                   style={styles.input}
-                  placeholder="vidushi.1023108@gmail.com"
+                  placeholder="Enter Your Email Address"
                   placeholderTextColor={Colors.textMuted}
                   value={employeeId}
                   onChangeText={setEmployeeId}

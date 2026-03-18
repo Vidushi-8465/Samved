@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "SurakshaNet",
-    "slug": "surakshanet",
+    "name": "SMC LiveMonitor",
+    "slug": "smc-livemonitor",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "surakshanet",
+    "scheme": "smc-livemonitor",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/images/splash.png",
@@ -14,9 +14,9 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.smc.surakshanet",
+      "bundleIdentifier": "com.smc.livemonitor",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Use Face ID to securely login to SurakshaNet"
+        "NSFaceIDUsageDescription": "Use Face ID to securely login to SMC LiveMonitor"
       }
     },
     "android": {
@@ -24,7 +24,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#1A3C6E"
       },
-      "package": "com.smc.surakshanet",
+      "package": "com.smc.livemonitor",
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",

@@ -1,5 +1,5 @@
 /*
- * SurakshaNet — ESP32 LoRa RECEIVER / WiFi Gateway (Surface Device)
+ * SMC LiveMonitor — ESP32 LoRa RECEIVER / WiFi Gateway (Surface Device)
  * This device sits on the SURFACE near the manhole.
  * It receives LoRa packets from the worker device
  * and pushes data to Firebase via WiFi.

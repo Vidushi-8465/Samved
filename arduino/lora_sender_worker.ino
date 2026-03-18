@@ -1,5 +1,5 @@
 /*
- * SurakshaNet — ESP32 LoRa SENDER (Worker Device)
+ * SMC LiveMonitor — ESP32 LoRa SENDER (Worker Device)
  * This device is WORN BY THE WORKER inside the sewer.
  * It has NO WiFi — it transmits via LoRa to the surface gateway.
  *
