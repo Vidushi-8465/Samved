@@ -136,7 +136,35 @@ export const listenToWorkerSensor = (
 ) => {
   const sensorRef = ref(rtdb, `sensors/${workerId}`);
   onValue(sensorRef, (snapshot: DataSnapshot) => {
-    callback(snapshot.exists() ? { workerId, ...snapshot.val() } : null);
+    if (snapshot.exists()) {
+      const raw = snapshot.val();
+      const sensor: SensorData = {
+        workerId,
+        ch4: raw.mq4_ppm ?? 0,
+        h2s: raw.mq7_ppm ?? 0,
+        gasAlert: raw.gas_alert ?? 0,
+        gasWarming: raw.gasWarming ?? false,
+        heartRate: raw.hr ?? 0,
+        spO2: raw.spo2 ?? 0,
+        fingerOn: raw.finger ?? 0,
+        motionAlert: raw.motion_alert ?? 0,
+        fallDetected: raw.fall ?? false,
+        workerPosture: raw.posture ?? 'standing',
+        sosTriggered: raw.sos ?? false,
+        rssi: raw.rssi ?? -100,
+        manholeId: raw.manhole_id ?? '—',
+        zone: raw.zone ?? '—',
+        locationLabel: raw.location_label ?? '—',
+        lastGpsLat: raw.gps_lat ?? 0,
+        lastGpsLng: raw.gps_lng ?? 0,
+        mode: raw.mode ?? 'premonitoring',
+        safetyStatus: raw.status ?? 'NORMAL',
+        lastUpdated: raw.last_seen ?? 0,
+      };
+      callback(sensor);
+    } else {
+      callback(null);
+    }
   });
   return () => off(sensorRef);
 };
@@ -150,10 +178,41 @@ export const listenToAllSensors = (
     if (snapshot.exists()) {
       const all = snapshot.val();
       const filtered: Record<string, SensorData> = {};
+      
       workerIds.forEach(id => {
-        if (all[id]) filtered[id] = { workerId: id, ...all[id] };
+        if (all[id]) {
+          const raw = all[id];
+          // Map Firebase field names to SensorData interface
+          filtered[id] = {
+            workerId: id,
+            ch4: raw.mq4_ppm ?? 0,           // CH4 from MQ4
+            h2s: raw.mq7_ppm ?? 0,           // H2S from MQ7
+            gasAlert: raw.gas_alert ?? 0,
+            gasWarming: raw.gasWarming ?? false,
+            heartRate: raw.hr ?? 0,          // Heart rate
+            spO2: raw.spo2 ?? 0,             // SpO2 percentage
+            fingerOn: raw.finger ?? 0,       // Finger detection
+            motionAlert: raw.motion_alert ?? 0,
+            fallDetected: raw.fall ?? false,
+            workerPosture: raw.posture ?? 'standing',
+            sosTriggered: raw.sos ?? false,
+            rssi: raw.rssi ?? -100,
+            manholeId: raw.manhole_id ?? '—',
+            zone: raw.zone ?? '—',
+            locationLabel: raw.location_label ?? '—',
+            lastGpsLat: raw.gps_lat ?? 0,
+            lastGpsLng: raw.gps_lng ?? 0,
+            mode: raw.mode ?? 'premonitoring',
+            safetyStatus: raw.status ?? 'NORMAL',
+            lastUpdated: raw.last_seen ?? 0,
+          };
+        }
       });
+      
+      console.log('Sensors loaded for workers:', Object.keys(filtered));
       callback(filtered);
+    } else {
+      console.log('No sensor data found in RTDB');
     }
   });
   return () => off(sensorsRef);
@@ -165,7 +224,9 @@ export const listenToWorkers = (
 ) => {
   const q = query(collection(db, 'workers'), where('managerId', '==', managerId));
   return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as WorkerProfile)));
+    const workers = snap.docs.map(d => ({ id: d.id, ...d.data() } as WorkerProfile));
+    console.log('Workers from Firestore:', workers.length);
+    callback(workers);
   });
 };
 
@@ -173,15 +234,33 @@ export const listenToAlerts = (
   zones: string[],
   callback: (alerts: Alert[]) => void
 ) => {
+  // Firestore requires a composite index for "in" + "orderBy" queries.
+  // To avoid requiring manual index creation, we fetch the matching documents
+  // without ordering and sort/limit on the client.
   const q = query(
     collection(db, 'alerts'),
-    where('zone', 'in', zones.length > 0 ? zones : ['__none__']),
-    orderBy('timestamp', 'desc'),
-    limit(50)
+    where('zone', 'in', zones.length > 0 ? zones : ['__none__'])
   );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as Alert)));
-  });
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const alerts = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as Alert))
+        .sort((a, b) => {
+          const aTs = (a.timestamp as any)?.toMillis?.() ?? 0;
+          const bTs = (b.timestamp as any)?.toMillis?.() ?? 0;
+          return bTs - aTs;
+        })
+        .slice(0, 50);
+      console.log('Alerts from Firestore:', alerts.length);
+      callback(alerts);
+    },
+    (error) => {
+      // Swallow errors to avoid crashes on mobile; can be inspected in debug logs.
+      console.warn('listenToAlerts error', error);
+    }
+  );
 };
 
 export const resolveAlert = async (alertId: string, resolvedBy: string) => {

@@ -1,199 +1,172 @@
 // scripts/seedFirebase.js
+// NO admin SDK — uses client SDK only, no credentials needed
+// Run: node scripts/seedFirebase.js
+
 const { initializeApp } = require('firebase/app');
+const { getFirestore, doc, setDoc, collection, addDoc, Timestamp } = require('firebase/firestore');
 const { getDatabase, ref, set } = require('firebase/database');
-const { getAuth, createUserWithEmailAndPassword } = require('firebase/auth');
-const { Timestamp } = require('firebase/firestore');
-const admin = require('firebase-admin');
+const { getAuth, signInWithEmailAndPassword } = require('firebase/auth');
 
-
+// ── SMC-DEVICE PROJECT CONFIG ─────────────────────────────────
 const firebaseConfig = {
-  apiKey: "AIzaSyCUjpfnoTOSA1UugTBCtkhrB2a8f4h3vWA",
-  authDomain: "surakshanet-smc.firebaseapp.com",
-  databaseURL: "https://surakshanet-smc-default-rtdb.firebaseio.com",
-  projectId: "surakshanet-smc",
-  storageBucket: "surakshanet-smc.firebasestorage.app",
-  messagingSenderId: "467586782312",
-  appId: "1:467586782312:web:33b81f93b60cc61c9d57dd"
+  apiKey: "AIzaSyBWy5cFJErABW_p59DHQkWIwLonQAtJtms",
+  authDomain: "smc-device.firebaseapp.com",
+  databaseURL: "https://smc-device-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "smc-device",
+  storageBucket: "smc-device.firebasestorage.app",
+  messagingSenderId: "206492309326",
+  appId: "1:206492309326:web:a909ae02a076c10331301f"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const rtdb = getDatabase(app);
+// ── YOUR LOGIN ────────────────────────────────────────────────
+const MANAGER_EMAIL    = "vidushi.1023108@gmail.com";
+const MANAGER_PASSWORD = "VIDUSHI@2005";   // ← fill this in
+// ──────────────────────────────────────────────────────────────
+
+const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-
-// Initialize Admin SDK (for Firestore writes that bypass security rules)
-admin.initializeApp({
-  projectId: firebaseConfig.projectId
-});
-const adminDb = admin.firestore();
-
-const MANAGER_UID = 'mS3ZOxYDKOTZEUQ6xKrbcX9HxeM2'; // This will be replaced with actual UID
+const db   = getFirestore(app);
+const rtdb = getDatabase(app);
 
 const WORKERS = [
-  { id: 'w001', name: 'Ramesh Patil', nameMarathi: 'रमेश पाटील', employeeId: 'SMC-2024-001', zone: 'north', shift: 'morning', phone: '9876543210', managerId: MANAGER_UID, bloodGroup: 'B+', emergencyContact: '9876543211' },
-  { id: 'w002', name: 'Suresh Jadhav', nameMarathi: 'सुरेश जाधव', employeeId: 'SMC-2024-002', zone: 'east', shift: 'morning', phone: '9876543212', managerId: MANAGER_UID, bloodGroup: 'O+', emergencyContact: '9876543213' },
-  { id: 'w003', name: 'Priya Shinde', nameMarathi: 'प्रिया शिंदे', employeeId: 'SMC-2024-003', zone: 'south', shift: 'afternoon', phone: '9876543214', managerId: MANAGER_UID, bloodGroup: 'A+', emergencyContact: '9876543215' },
-  { id: 'w004', name: 'Mahesh Kale', nameMarathi: 'महेश काळे', employeeId: 'SMC-2024-004', zone: 'west', shift: 'morning', phone: '9876543216', managerId: MANAGER_UID, bloodGroup: 'AB+', emergencyContact: '9876543217' },
-  { id: 'w005', name: 'Anita More', nameMarathi: 'अनिता मोरे', employeeId: 'SMC-2024-005', zone: 'central', shift: 'night', phone: '9876543218', managerId: MANAGER_UID, bloodGroup: 'B-', emergencyContact: '9876543219' },
+  { id: 'w001', name: 'Ramesh Patil',  nameMarathi: 'रमेश पाटील',  employeeId: 'SMC-2024-001', zone: 'north',   shift: 'morning',   phone: '9876543210', bloodGroup: 'B+',  emergencyContact: '9876543211' },
+  { id: 'w002', name: 'Suresh Jadhav', nameMarathi: 'सुरेश जाधव',  employeeId: 'SMC-2024-002', zone: 'east',    shift: 'morning',   phone: '9876543212', bloodGroup: 'O+',  emergencyContact: '9876543213' },
+  { id: 'w003', name: 'Priya Shinde',  nameMarathi: 'प्रिया शिंदे', employeeId: 'SMC-2024-003', zone: 'south',   shift: 'afternoon', phone: '9876543214', bloodGroup: 'A+',  emergencyContact: '9876543215' },
+  { id: 'w004', name: 'Mahesh Kale',   nameMarathi: 'महेश काळे',    employeeId: 'SMC-2024-004', zone: 'west',    shift: 'morning',   phone: '9876543216', bloodGroup: 'AB+', emergencyContact: '9876543217' },
+  { id: 'w005', name: 'Anita More',    nameMarathi: 'अनिता मोरे',   employeeId: 'SMC-2024-005', zone: 'central', shift: 'night',     phone: '9876543218', bloodGroup: 'B-',  emergencyContact: '9876543219' },
 ];
 
-// ── Sensor data now includes CH4, H2S, SpO2, fall detection ──
+// ── SENSOR DATA — field names match EXACTLY what ESP32 pushes ──
+// These match what your real w001 device already sends to Firebase
+// (fall, finger, gas_alert, hr, last_seen, motion_alert, mq4_ppm, mq7_ppm, rssi, spo2, status)
 const SENSOR_DATA = {
   w001: {
-    ch4: 5.2, h2s: 2.1, heartRate: 78, spO2: 98,
-    fallDetected: false, workerPosture: 'standing',
-    manholeId: 'MH-02', zone: 'north',
-    locationLabel: 'Ward 2 Main Line',
-    lastGpsLat: 17.6980, lastGpsLng: 75.9080,
-    sosTriggered: false, mode: 'monitoring', lastUpdated: Date.now()
+    mq4_ppm: 5,  mq7_ppm: 2,  hr: 78,  spo2: 98,
+    fall: false, finger: 1,   gas_alert: 0, motion_alert: 0,
+    sos: false,  rssi: -45,   posture: 'standing',
+    status: 'SAFE',           mode: 'monitoring',
+    manhole_id: 'MH-02',      zone: 'north',
+    location_label: 'Ward 2 Main Line',
+    gps_lat: 17.6980,         gps_lng: 75.9080,
+    last_seen: Date.now(),    gasWarming: false,
   },
   w002: {
-    ch4: 18.5, h2s: 7.4, heartRate: 105, spO2: 93,
-    fallDetected: false, workerPosture: 'standing',
-    manholeId: 'MH-05', zone: 'east',
-    locationLabel: 'Hutatma Chowk',
-    lastGpsLat: 17.6870, lastGpsLng: 75.9120,
-    sosTriggered: false, mode: 'monitoring', lastUpdated: Date.now()
+    mq4_ppm: 18, mq7_ppm: 7,  hr: 105, spo2: 93,
+    fall: false, finger: 1,   gas_alert: 3, motion_alert: 0,
+    sos: false,  rssi: -78,   posture: 'standing',
+    status: 'WARNING',        mode: 'monitoring',
+    manhole_id: 'MH-05',      zone: 'east',
+    location_label: 'Hutatma Chowk',
+    gps_lat: 17.6870,         gps_lng: 75.9120,
+    last_seen: Date.now(),    gasWarming: false,
   },
   w003: {
-    ch4: 2.1, h2s: 1.0, heartRate: 72, spO2: 99,
-    fallDetected: false, workerPosture: 'standing',
-    manholeId: 'MH-03', zone: 'south',
-    locationLabel: 'Akkalkot Road Entry',
-    lastGpsLat: 17.6820, lastGpsLng: 75.9050,
-    sosTriggered: false, mode: 'premonitoring', lastUpdated: Date.now()
+    mq4_ppm: 2,  mq7_ppm: 1,  hr: 0,   spo2: 0,
+    fall: false, finger: 0,   gas_alert: 0, motion_alert: 0,
+    sos: false,  rssi: -55,   posture: 'standing',
+    status: 'SAFE',           mode: 'premonitoring',
+    manhole_id: 'MH-03',      zone: 'south',
+    location_label: 'Akkalkot Road Entry',
+    gps_lat: 17.6820,         gps_lng: 75.9050,
+    last_seen: Date.now(),    gasWarming: false,
   },
   w004: {
-    ch4: 30.8, h2s: 14.2, heartRate: 125, spO2: 88,
-    fallDetected: true, workerPosture: 'fallen',
-    manholeId: 'MH-07', zone: 'west',
-    locationLabel: 'Pandharpur Road Main',
-    lastGpsLat: 17.6910, lastGpsLng: 75.9000,
-    sosTriggered: true, mode: 'monitoring', lastUpdated: Date.now()
+    mq4_ppm: 30, mq7_ppm: 14, hr: 125, spo2: 88,
+    fall: true,  finger: 1,   gas_alert: 5, motion_alert: 1,
+    sos: true,   rssi: -82,   posture: 'fallen',
+    status: 'DANGER',         mode: 'monitoring',
+    manhole_id: 'MH-07',      zone: 'west',
+    location_label: 'Pandharpur Road Main',
+    gps_lat: 17.6910,         gps_lng: 75.9000,
+    last_seen: Date.now(),    gasWarming: false,
   },
   w005: {
-    ch4: 8.0, h2s: 3.5, heartRate: 82, spO2: 97,
-    fallDetected: false, workerPosture: 'moving',
-    manholeId: 'MH-09', zone: 'central',
-    locationLabel: 'Mangalwar Peth Centre',
-    lastGpsLat: 17.6890, lastGpsLng: 75.9070,
-    sosTriggered: false, mode: 'monitoring', lastUpdated: Date.now()
+    mq4_ppm: 8,  mq7_ppm: 3,  hr: 82,  spo2: 97,
+    fall: false, finger: 1,   gas_alert: 0, motion_alert: 0,
+    sos: false,  rssi: -70,   posture: 'standing',
+    status: 'SAFE',           mode: 'monitoring',
+    manhole_id: 'MH-09',      zone: 'central',
+    location_label: 'Mangalwar Peth Centre',
+    gps_lat: 17.6890,         gps_lng: 75.9070,
+    last_seen: Date.now(),    gasWarming: false,
   },
 };
 
-const SAMPLE_ALERTS = [
-  {
-    id: 'a001', workerId: 'w004', workerName: 'Mahesh Kale',
-    type: 'FALL', value: 'Fall detected + SOS triggered',
-    zone: 'west', manholeId: 'MH-07',
-    timestamp: Timestamp.fromDate(new Date(Date.now() - 5 * 60 * 1000)),
-    resolved: false
-  },
-  {
-    id: 'a002', workerId: 'w004', workerName: 'Mahesh Kale',
-    type: 'CH4_CRITICAL', value: '30.8% LEL',
-    zone: 'west', manholeId: 'MH-07',
-    timestamp: Timestamp.fromDate(new Date(Date.now() - 6 * 60 * 1000)),
-    resolved: false
-  },
-  {
-    id: 'a003', workerId: 'w002', workerName: 'Suresh Jadhav',
-    type: 'H2S_HIGH', value: '7.4 PPM',
-    zone: 'east', manholeId: 'MH-05',
-    timestamp: Timestamp.fromDate(new Date(Date.now() - 30 * 60 * 1000)),
-    resolved: false
-  },
-  {
-    id: 'a004', workerId: 'w002', workerName: 'Suresh Jadhav',
-    type: 'SPO2_LOW', value: 'SpO2 93%',
-    zone: 'east', manholeId: 'MH-05',
-    timestamp: Timestamp.fromDate(new Date(Date.now() - 31 * 60 * 1000)),
-    resolved: false
-  },
-  {
-    id: 'a005', workerId: 'w001', workerName: 'Ramesh Patil',
-    type: 'SOS', value: 'SOS Button Pressed',
-    zone: 'north', manholeId: 'MH-02',
-    timestamp: Timestamp.fromDate(new Date(Date.now() - 3 * 60 * 60 * 1000)),
-    resolved: true, resolvedBy: 'Manager', resolvedAt: Timestamp.fromDate(new Date(Date.now() - 2.5 * 60 * 60 * 1000))
-  },
+const ALERTS = [
+  { workerId: 'w004', workerName: 'Mahesh Kale',   type: 'FALL',         value: 'Fall detected + SOS triggered', zone: 'west',  manholeId: 'MH-07', resolved: false },
+  { workerId: 'w004', workerName: 'Mahesh Kale',   type: 'CH4_CRITICAL', value: '30 PPM',                        zone: 'west',  manholeId: 'MH-07', resolved: false },
+  { workerId: 'w002', workerName: 'Suresh Jadhav', type: 'H2S_HIGH',     value: '7 PPM',                         zone: 'east',  manholeId: 'MH-05', resolved: false },
+  { workerId: 'w002', workerName: 'Suresh Jadhav', type: 'SPO2_LOW',     value: 'SpO2 93%',                      zone: 'east',  manholeId: 'MH-05', resolved: false },
+  { workerId: 'w001', workerName: 'Vidushi Bhardwaj',  type: 'SOS',          value: 'SOS Button Pressed',            zone: 'north', manholeId: 'MH-02', resolved: true, resolvedBy: 'Vidushi Bhardwaj' },
 ];
 
-const MANAGER = {
-  uid: 'mS3ZOxYDKOTZEUQ6xKrbcX9HxeM2', 
-  name: 'Vidushi Bhardwaj',
-  employeeId: 'SMC-MGR-001',
-  role: 'manager',
-  zones: ['north', 'south', 'east', 'west', 'central'],
-  phone: '9876500001',
-  designation: 'Senior Sanitation Manager',
-};
-
 async function seed() {
-  console.log('🌱 Seeding Firebase with updated sensor schema...\n');
+  console.log('🌱 Seeding SMC-DEVICE Firebase...\n');
 
-  // Create Firebase Auth user for manager
+  // Step 1 — login to get UID
+  console.log('🔐 Logging in...');
+  let uid;
   try {
-    const email = `${MANAGER.employeeId}@gmail.com`;
-    const password = 'manager123'; // Default password for demo
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    console.log(`✅ Firebase Auth user created: ${email} (UID: ${userCredential.user.uid})`);
-    
-    // Update MANAGER object with actual UID
-    MANAGER.uid = userCredential.user.uid;
-  } catch (error) {
-    if (error.code === 'auth/email-already-in-use') {
-      console.log('ℹ️  Manager user already exists in Firebase Auth');
-    } else {
-      console.error('❌ Error creating manager user:', error.message);
-      throw error;
-    }
+    const cred = await signInWithEmailAndPassword(auth, MANAGER_EMAIL, MANAGER_PASSWORD);
+    uid = cred.user.uid;
+    console.log(`✅ Logged in. UID: ${uid}\n`);
+  } catch (e) {
+    console.error('❌ Login failed:', e.message);
+    console.log('   Make sure MANAGER_PASSWORD is correct in this script.');
+    process.exit(1);
   }
 
-  await adminDb.collection('users').doc(MANAGER.uid).set(MANAGER);
-  console.log('✅ Manager profile seeded in Firestore');
+  // Step 2 — manager profile in Firestore
+  console.log('📝 Seeding manager profile...');
+  await setDoc(doc(db, 'users', uid), {
+    name: 'Vidushi Bhardwaj',
+    employeeId: 'SMC-MGR-001',
+    role: 'manager',
+    zones: ['north', 'south', 'east', 'west', 'central'],
+    phone: '9876500001',
+    designation: 'Senior Sanitation Manager',
+  });
+  console.log('✅ Manager seeded\n');
 
+  // Step 3 — workers in Firestore
+  console.log('👷 Seeding workers...');
   for (const worker of WORKERS) {
     const { id, ...data } = worker;
-    // Update managerId to actual UID
-    data.managerId = MANAGER.uid;
-    await adminDb.collection('workers').doc(id).set(data);
+    await setDoc(doc(db, 'workers', id), { ...data, managerId: uid });
+    console.log(`   ✅ ${worker.name} (${id})`);
   }
-  console.log('✅ Workers seeded (5 workers)');
+  console.log('');
 
-  for (const alert of SAMPLE_ALERTS) {
-    const { id, ...data } = alert;
-    await adminDb.collection('alerts').doc(id).set(data);
+  // Step 4 — alerts in Firestore
+  console.log('🚨 Seeding alerts...');
+  for (const alert of ALERTS) {
+    await addDoc(collection(db, 'alerts'), {
+      ...alert,
+      timestamp: Timestamp.now(),
+      ...(alert.resolvedBy ? { resolvedAt: Timestamp.now() } : {}),
+    });
+    console.log(`   ✅ ${alert.type} — ${alert.workerName}`);
   }
-  console.log('✅ Alerts seeded (includes FALL, CH4, H2S, SpO2 alerts)');
+  console.log('');
 
+  // Step 5 — sensor data in Realtime DB
+  console.log('📡 Seeding sensor data to Realtime Database...');
   for (const [workerId, data] of Object.entries(SENSOR_DATA)) {
-    await set(ref(rtdb, `sensors/${workerId}`), data);
+    await set(ref(rtdb, `workers/${workerId}`), data);
+    console.log(`   ✅ ${workerId} → ${data.status}`);
   }
-  console.log('✅ Sensor data seeded to Realtime DB');
-  console.log('   → w004 (Mahesh Kale) is in DANGER state with fall + SOS triggered');
-  console.log('   → w002 (Suresh Jadhav) is in WARNING state');
-  console.log('   → w001, w003, w005 are SAFE\n');
 
-  console.log('🎉 Done! Firebase is ready with full sensor schema.');
-  console.log('\n📡 Firebase Realtime DB structure:');
-  console.log('sensors/');
-  console.log('  {workerId}/');
-  console.log('    ch4: number          (% LEL)');
-  console.log('    h2s: number          (PPM)');
-  console.log('    heartRate: number    (BPM)');
-  console.log('    spO2: number         (%)');
-  console.log('    fallDetected: bool');
-  console.log('    workerPosture: standing|stationary|fallen');
-  console.log('    manholeId: string    (e.g. MH-05)');
-  console.log('    zone: string');
-  console.log('    locationLabel: string');
-  console.log('    lastGpsLat: number');
-  console.log('    lastGpsLng: number');
-  console.log('    sosTriggered: bool');
-  console.log('    mode: premonitoring|monitoring');
-  console.log('    lastUpdated: timestamp');
+  console.log('\n🎉 All done! SMC-DEVICE is fully seeded.');
+  console.log('\n📊 Dashboard will show:');
+  console.log('   🔴 w004 Mahesh Kale   → DANGER (fall + SOS + gas critical)');
+  console.log('   🟡 w002 Suresh Jadhav → WARNING (gas + SpO2 low)');
+  console.log('   🟢 w001 Ramesh Patil  → SAFE (your real ESP32 device)');
+  console.log('   🟢 w003 Priya Shinde  → SAFE (pre-monitoring)');
+  console.log('   🟢 w005 Anita More    → SAFE\n');
   process.exit(0);
 }
 
-seed().catch(console.error);
+seed().catch(e => {
+  console.error('\n❌ Seed failed:', e.message);
+  process.exit(1);
+});

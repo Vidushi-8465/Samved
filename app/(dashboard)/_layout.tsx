@@ -1,7 +1,7 @@
 // app/(dashboard)/_layout.tsx
-import { Tabs, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { Tabs, useRouter, usePathname } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { View, Text, ActivityIndicator, StyleSheet, PanResponder, GestureResponderEvent, PanResponderGestureState } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useStore } from '@/store/useStore';

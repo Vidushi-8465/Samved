@@ -438,6 +438,7 @@ export default function OverviewScreen() {
   useEffect(() => {
     if (!manager) return;
     const unsubWorkers = listenToWorkers(manager.uid, (w) => {
+      console.log('Workers loaded:', w.length);
       setWorkers(w);
       if (w.length > 0) {
         listenToAllSensors(w.map(wk => wk.id), setSensors);
@@ -446,6 +447,7 @@ export default function OverviewScreen() {
     });
     const zones = manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map(z => z.id);
     const unsubAlerts = listenToAlerts(zones, (a) => {
+      console.log('Alerts loaded:', a.length);
       setAlerts(a);
       if (a.some(al => (al.type === 'SOS' || al.type === 'FALL') && !al.resolved)) setShowSOS(true);
     });
