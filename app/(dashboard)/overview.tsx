@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  Dimensions, Modal, Animated, Platform
+  Dimensions, Modal, Animated, Platform, PanResponder, GestureResponderEvent
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,6 +15,8 @@ import {
   getSensorStatus, SOLAPUR_ZONES, SensorData, Alert
 } from '@/services/sensorService';
 import { logoutManager } from '@/services/authService';
+import { ref, onValue, off } from 'firebase/database';
+import { rtdb } from '@/services/firebase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
@@ -427,6 +429,106 @@ const gc = StyleSheet.create({
   note: { fontSize: 10, color: '#94A3B8', fontFamily: 'Poppins_400Regular', marginTop: 4 },
 });
 
+// ── PRE-MONITORING CARD ───────────────────────────────────────
+function PreMonitoringCard({ workerId }: { workerId: string }) {
+  const [data, setData] = useState<any>(null);
+
+  useEffect(() => {
+    if (!workerId) return;
+    const r = ref(rtdb, `sensors/${workerId}/pre_monitor`);
+    onValue(r, snap => { setData(snap.exists() ? snap.val() : null); });
+    return () => off(r);
+  }, [workerId]);
+
+  const verdict = data?.result ?? null;
+  const vColor  = verdict === 'SAFE' ? '#2ECC71' : verdict === 'WARNING' ? '#F39C12' : verdict === 'UNSAFE' ? '#E74C3C' : '#94A3B8';
+  const vBg     = verdict === 'SAFE' ? '#E8F8F0' : verdict === 'WARNING' ? '#FEF9E7' : verdict === 'UNSAFE' ? '#FDEDEC' : '#F0F4F8';
+  const vIcon   = verdict === 'SAFE' ? 'check-circle' : verdict === 'WARNING' ? 'alert-circle' : verdict === 'UNSAFE' ? 'close-circle' : 'radar';
+  const vLabel  = verdict === 'SAFE' ? 'SAFE — Entry Permitted' : verdict === 'WARNING' ? 'WARNING — Enter with Caution' : verdict === 'UNSAFE' ? 'UNSAFE — DO NOT ENTER!' : 'Awaiting scan...';
+  const vSub    = verdict === 'SAFE' ? 'Normal precautions apply.' : verdict === 'WARNING' ? 'Full protective gear required.' : verdict === 'UNSAFE' ? 'Dangerous gas levels detected.' : 'Switch device to PRE mode and lower into sewer.';
+
+  const levels = data ? [
+    { label: 'Level 1', ch4: data.level1_ch4 ?? 0, co: data.level1_co ?? 0 },
+    { label: 'Level 2', ch4: data.level2_ch4 ?? 0, co: data.level2_co ?? 0 },
+    { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0 },
+  ] : [];
+
+  const ch4Status = (v: number) => v >= 5000 ? 'danger' : v >= 1000 ? 'warning' : 'safe';
+  const coStatus  = (v: number) => v >= 200  ? 'danger' : v >= 50   ? 'warning' : 'safe';
+
+  return (
+    <View style={pm.card}>
+      <View style={pm.header}>
+        <Text style={pm.title}>PRE-MONITORING</Text>
+        <Text style={pm.sub}>3-Level Sewer Gas Sample</Text>
+      </View>
+
+      {/* Verdict banner */}
+      <View style={[pm.verdict, { backgroundColor: vBg, borderColor: vColor }]}>
+        <MaterialCommunityIcons name={vIcon as any} size={26} color={vColor} />
+        <View style={{ flex: 1 }}>
+          <Text style={[pm.vLabel, { color: vColor }]}>{vLabel}</Text>
+          <Text style={pm.vSub}>{vSub}</Text>
+        </View>
+      </View>
+
+      {/* 3-Level gas table */}
+      {levels.length > 0 ? (
+        <View style={pm.table}>
+          <View style={pm.tableHead}>
+            <Text style={[pm.th, { flex: 1 }]}>DEPTH</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (PPM)</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CO (PPM)</Text>
+          </View>
+          {levels.map((lv, i) => (
+            <View key={i} style={[pm.tableRow, i % 2 === 1 && { backgroundColor: '#F8FAFC' }]}>
+              <Text style={[pm.td, { flex: 1, fontFamily: 'Poppins_600SemiBold', color: '#1A202C' }]}>{lv.label}</Text>
+              <View style={[pm.cell, { flex: 1 }]}>
+                <View style={[pm.dot, { backgroundColor: STATUS_COLOR[ch4Status(lv.ch4)] }]} />
+                <Text style={[pm.td, { color: STATUS_COLOR[ch4Status(lv.ch4)] }]}>{lv.ch4}</Text>
+              </View>
+              <View style={[pm.cell, { flex: 1 }]}>
+                <View style={[pm.dot, { backgroundColor: STATUS_COLOR[coStatus(lv.co)] }]} />
+                <Text style={[pm.td, { color: STATUS_COLOR[coStatus(lv.co)] }]}>{lv.co}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <View style={pm.noData}>
+          <MaterialCommunityIcons name="radar" size={26} color="#94A3B8" />
+          <Text style={pm.noDataText}>No pre-monitor data yet</Text>
+          <Text style={pm.noDataSub}>Device must be in PRE mode</Text>
+        </View>
+      )}
+
+      {data?.rssi != null && (
+        <Text style={pm.signal}>LoRa Signal: {data.rssi} dBm</Text>
+      )}
+    </View>
+  );
+}
+const pm = StyleSheet.create({
+  card: { backgroundColor: '#fff', borderRadius: 8, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  title: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: '#1A202C' },
+  sub: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  verdict: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 8, padding: 12, borderWidth: 1.5, marginBottom: 12 },
+  vLabel: { fontSize: 13, fontFamily: 'Poppins_700Bold' },
+  vSub: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B', marginTop: 2 },
+  table: { borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: '#E2E8F0' },
+  tableHead: { flexDirection: 'row', backgroundColor: '#1A3C6E', paddingVertical: 8, paddingHorizontal: 10 },
+  th: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: '#B8C8D8', letterSpacing: 0.5 },
+  tableRow: { flexDirection: 'row', paddingVertical: 9, paddingHorizontal: 10, borderTopWidth: 1, borderTopColor: '#F0F4F8' },
+  cell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  td: { fontSize: 13, fontFamily: 'Poppins_500Medium', textAlign: 'center' },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  noData: { alignItems: 'center', paddingVertical: 18, gap: 5 },
+  noDataText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: '#94A3B8' },
+  noDataSub: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#B0BEC5' },
+  signal: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#94A3B8', marginTop: 8 },
+});
+
 // ── MAIN SCREEN ───────────────────────────────────────────────
 export default function OverviewScreen() {
   const { manager, language, setManager, setWorkers, setAlerts, setSensors, workers, alerts, sensors } = useStore();
@@ -434,11 +536,12 @@ export default function OverviewScreen() {
   const now = useRealTimeClock();
   const [showSOS, setShowSOS] = useState(false);
   const [selectedWorkerId, setSelectedWorkerId] = useState(null);
+  const workerScrollRef = useRef(null);
+  const panResponder = useRef(null);
 
   useEffect(() => {
     if (!manager) return;
     const unsubWorkers = listenToWorkers(manager.uid, (w) => {
-      console.log('Workers loaded:', w.length);
       setWorkers(w);
       if (w.length > 0) {
         listenToAllSensors(w.map(wk => wk.id), setSensors);
@@ -447,12 +550,32 @@ export default function OverviewScreen() {
     });
     const zones = manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map(z => z.id);
     const unsubAlerts = listenToAlerts(zones, (a) => {
-      console.log('Alerts loaded:', a.length);
       setAlerts(a);
       if (a.some(al => (al.type === 'SOS' || al.type === 'FALL') && !al.resolved)) setShowSOS(true);
     });
     return () => { unsubWorkers(); unsubAlerts(); };
   }, [manager]);
+
+  // Setup pan responder for swipe gestures
+  useEffect(() => {
+    panResponder.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (evt, gestureState) => Math.abs(gestureState.dx) > 5,
+      onPanResponderRelease: (evt, gestureState) => {
+        const threshold = 50;
+        const currentIdx = workers.findIndex(w => w.id === selectedWorkerId);
+        if (currentIdx === -1) return;
+
+        if (gestureState.dx > threshold && currentIdx > 0) {
+          // Swipe right -> go to previous worker
+          setSelectedWorkerId(workers[currentIdx - 1].id);
+        } else if (gestureState.dx < -threshold && currentIdx < workers.length - 1) {
+          // Swipe left -> go to next worker
+          setSelectedWorkerId(workers[currentIdx + 1].id);
+        }
+      },
+    });
+  }, [workers, selectedWorkerId]);
 
   const activeSensor = selectedWorkerId ? sensors[selectedWorkerId] : Object.values(sensors)[0];
   const selectedWorker = workers.find(w => w.id === selectedWorkerId) || workers[0];
@@ -470,41 +593,87 @@ export default function OverviewScreen() {
     router.replace('/');
   };
 
+  const isMobile = SCREEN_WIDTH < 768;
+
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
       <SOSModal alerts={alerts} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
 
-      {/* TOP BAR */}
-      <View style={[main.topBar, isTablet ? main.topBarRow : main.topBarCol]}>
-        <View style={main.topLeft}>
-          <View style={main.logoBox}>
-            <MaterialCommunityIcons name="shield-check" size={20} color="#FF6B00" />
+      {/* TOP BAR - Improved for mobile */}
+      <View style={main.topBar}>
+        {isMobile ? (
+          // Mobile layout - compact and worker-focused
+          <View style={main.mobileTopContainer}>
+            <View style={main.mobileTopTop}>
+              <View style={main.logoBox}>
+                <MaterialCommunityIcons name="shield-check" size={18} color="#FF6B00" />
+              </View>
+              <View style={main.mobileTopInfo}>
+                <Text style={main.mobileOrgName}>Solapur Municipal Corporation</Text>
+                <Text style={main.mobileOrgSub}>Smart Sewer Safety Monitoring</Text>
+              </View>
+              <TouchableOpacity style={main.logoutBtn} onPress={handleLogout}>
+                <MaterialCommunityIcons name="logout" size={13} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Worker info section */}
+            <View style={main.mobileWorkerInfo}>
+              <View style={main.mobileWorkerLeft}>
+                <Text style={main.mobileWorkerLabel}>CURRENT WORKER</Text>
+                <Text style={main.mobileWorkerName}>
+                  {selectedWorker?.name || 'Select Worker'}
+                </Text>
+                <Text style={main.mobileWorkerDetail}>
+                  {selectedWorker?.employeeId || '—'} · {s?.manholeId ?? '—'}
+                </Text>
+              </View>
+              <View style={main.mobileWorkerRight}>
+                <View style={main.dtBox}>
+                  <Text style={main.dtLabel}>TIME</Text>
+                  <Text style={main.dtVal}>{timeStr}</Text>
+                </View>
+                <View style={main.liveBadge}>
+                  <View style={main.liveDot} />
+                  <Text style={main.liveText}>LIVE</Text>
+                </View>
+              </View>
+            </View>
           </View>
-          <View style={main.topLeftText}>
-            <Text numberOfLines={1} ellipsizeMode="tail" style={main.topTitle}>Solapur Municipal Corporation</Text>
-            <Text numberOfLines={1} ellipsizeMode="tail" style={main.topSub}>
-              Smart Sewer Safety Monitoring · {s?.manholeId ?? '—'}, {s?.zone ? s.zone.charAt(0).toUpperCase() + s.zone.slice(1) + ' Zone' : '—'}
-            </Text>
-          </View>
-        </View>
-        <View style={main.topRight}>
-          <View style={main.dtBox}>
-            <Text style={main.dtLabel}>DATE</Text>
-            <Text style={main.dtVal}>{dateStr}</Text>
-          </View>
-          <View style={main.dtBox}>
-            <Text style={main.dtLabel}>TIME</Text>
-            <Text style={main.dtVal}>{timeStr}</Text>
-          </View>
-          <View style={[main.liveBadge, main.topRightItem]}>
-            <View style={main.liveDot} />
-            <Text style={main.liveText}>LIVE</Text>
-          </View>
-          <TouchableOpacity style={[main.logoutBtn, main.topRightItem]} onPress={handleLogout}>
-            <MaterialCommunityIcons name="logout" size={13} color="#fff" />
-            <Text style={main.logoutText}>Logout</Text>
-          </TouchableOpacity>
-        </View>
+        ) : (
+          // Desktop layout
+          <>
+            <View style={main.topLeft}>
+              <View style={main.logoBox}>
+                <MaterialCommunityIcons name="shield-check" size={20} color="#FF6B00" />
+              </View>
+              <View>
+                <Text style={main.topTitle}>Solapur Municipal Corporation</Text>
+                <Text style={main.topSub}>
+                  Smart Sewer Safety Monitoring · {s?.manholeId ?? '—'}, {s?.zone ? s.zone.charAt(0).toUpperCase() + s.zone.slice(1) + ' Zone' : '—'}
+                </Text>
+              </View>
+            </View>
+            <View style={main.topRight}>
+              <View style={main.dtBox}>
+                <Text style={main.dtLabel}>DATE</Text>
+                <Text style={main.dtVal}>{dateStr}</Text>
+              </View>
+              <View style={main.dtBox}>
+                <Text style={main.dtLabel}>TIME</Text>
+                <Text style={main.dtVal}>{timeStr}</Text>
+              </View>
+              <View style={main.liveBadge}>
+                <View style={main.liveDot} />
+                <Text style={main.liveText}>LIVE</Text>
+              </View>
+              <TouchableOpacity style={main.logoutBtn} onPress={handleLogout}>
+                <MaterialCommunityIcons name="logout" size={13} color="#fff" />
+                <Text style={main.logoutText}>Logout</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </View>
 
       {/* SOS BANNER */}
@@ -517,26 +686,35 @@ export default function OverviewScreen() {
         </TouchableOpacity>
       )}
 
-      {/* WORKER SELECTOR */}
+      {/* WORKER SELECTOR - With swipe support */}
       {workers.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}
-          style={main.workerBar} contentContainerStyle={{ paddingHorizontal: 12, gap: 8, paddingVertical: 5 }}>
-          {workers.map(w => {
-            const ws = sensors[w.id] ? getSensorStatus(sensors[w.id]).overall : 'safe';
-            const isSel = selectedWorkerId === w.id;
-            return (
-              <TouchableOpacity key={w.id}
-                style={[main.wTab, isSel && main.wTabActive, { borderColor: STATUS_COLOR[ws] }]}
-                onPress={() => setSelectedWorkerId(w.id)}>
-                <View style={[main.wDot, { backgroundColor: STATUS_COLOR[ws] }]} />
-                <Text numberOfLines={1} ellipsizeMode="tail" style={[main.wTabTxt, isSel && { color: '#1A3C6E', fontFamily: 'Poppins_600SemiBold' }] }>
-                  {w.name.split(' ')[0]}
-                </Text>
-                <Text style={main.wTabId}>{sensors[w.id]?.manholeId ?? '—'}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
+        <View {...panResponder.current.panHandlers} style={main.workerBar}>
+          <ScrollView
+            ref={workerScrollRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 12, gap: 8, paddingVertical: 5 }}
+            scrollEventThrottle={16}
+          >
+            {workers.map(w => {
+              const ws = sensors[w.id] ? getSensorStatus(sensors[w.id]).overall : 'safe';
+              const isSel = selectedWorkerId === w.id;
+              return (
+                <TouchableOpacity key={w.id}
+                  style={[main.wTab, isSel && main.wTabActive, { borderColor: STATUS_COLOR[ws] }]}
+                  onPress={() => setSelectedWorkerId(w.id)}>
+                  <View style={[main.wDot, { backgroundColor: STATUS_COLOR[ws] }]} />
+                  <View>
+                    <Text style={[main.wTabTxt, isSel && { color: '#1A3C6E', fontFamily: 'Poppins_600SemiBold' }]}>
+                      {w.name}
+                    </Text>
+                    <Text style={main.wTabId}>{sensors[w.id]?.manholeId ?? '—'}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
       )}
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={main.content}>
@@ -545,8 +723,8 @@ export default function OverviewScreen() {
         {/* ENV CARDS */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 4 }}>
           <EnvCard label="METHANE (CH₄)" value={s ? s.ch4.toFixed(1) : '—'} unit="% LEL" status={st?.ch4 ?? 'safe'} />
-          <EnvCard label="HYDROGEN SULFIDE (H₂S)" value={s ? s.h2s.toFixed(1) : '—'} unit="ppm" status={st?.h2s ?? 'safe'} />
-          <EnvCard label="CARBON MONOXIDE (CO)" value={s ? String(s.co ?? 0) : '—'} unit="ppm" status={(s?.co ?? 0) > 50 ? 'danger' : (s?.co ?? 0) > 25 ? 'warning' : 'safe'} />
+          <EnvCard label="CARBON MONOXIDE (CO)" value={s ? s.h2s.toFixed(1) : '—'} unit="ppm" status={st?.h2s ?? 'safe'} />
+          <EnvCard label="HYDROGEN SULFIDE (H₂S)" value={s ? String(s.co ?? 0) : '—'} unit="ppm" status={(s?.co ?? 0) > 50 ? 'danger' : (s?.co ?? 0) > 25 ? 'warning' : 'safe'} />
           <EnvCard label="OXYGEN (SpO₂)" value={s ? String(s.spO2) : '—'} unit="%" status={st?.spO2 ?? 'safe'} />
           <EnvCard label="HEART RATE" value={s ? String(s.heartRate) : '—'} unit="bpm" status={st?.heartRate ?? 'safe'} />
         </ScrollView>
@@ -555,6 +733,7 @@ export default function OverviewScreen() {
         {isTablet ? (
           <View style={main.grid3}>
             <View style={main.col1}>
+              <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
               <GasTrendCard sensor={activeSensor} />
             </View>
             <View style={main.col2}>
@@ -569,6 +748,7 @@ export default function OverviewScreen() {
         ) : (
           <View style={{ gap: 10 }}>
             <WorkerConditionCard sensor={activeSensor} workerEmployeeId={selectedWorker?.employeeId ?? 'WRK-001'} />
+            <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
             <AlertsLogCard alerts={alerts} />
             <ThresholdCard sensor={activeSensor} />
@@ -586,16 +766,29 @@ export default function OverviewScreen() {
 
 const main = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#F0F4F8' },
-  topBar: { backgroundColor: '#1A3C6E', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: '#FF6B00' },
-  topBarRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  topBarCol: { flexDirection: 'column', gap: 10 },
-  topLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, flexWrap: 'wrap' },
-  topLeftText: { flex: 1, minWidth: 0 },
+  topBar: { backgroundColor: '#1A3C6E', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: '#FF6B00', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+
+  // Desktop layout
+  topLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  topRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+
+  // Mobile layout
+  mobileTopContainer: { gap: 10 , width: '100%'},
+  mobileTopTop: { flexDirection: 'row', alignItems: 'center', gap: 10, justifyContent: 'space-between', width: '100%',    },
+  mobileTopInfo: { flex: 1 ,minWidth: 0},
+  mobileOrgName: { color: '#fff', fontSize: 13, fontFamily: 'Poppins_700Bold', flexShrink: 1},
+  mobileOrgSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', marginTop: 2 },
+
+  mobileWorkerInfo: { flexDirection: 'row', alignItems: 'center', gap: 12, justifyContent: 'space-between', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  mobileWorkerLeft: { flex: 1 },
+  mobileWorkerLabel: { color: '#8899AA', fontSize: 9, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.5 },
+  mobileWorkerName: { color: '#fff', fontSize: 15, fontFamily: 'Poppins_700Bold', marginTop: 3 },
+  mobileWorkerDetail: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', marginTop: 2 },
+  mobileWorkerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+
   logoBox: { width: 36, height: 36, borderRadius: 8, backgroundColor: 'rgba(255,107,0,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,107,0,0.4)' },
-  topTitle: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
-  topSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', flexShrink: 1 },
-  topRight: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' },
-  topRightItem: { marginLeft: 10 },
+  topTitle: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold' },
+  topSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular' },
   dtBox: { alignItems: 'center' },
   dtLabel: { color: '#8899AA', fontSize: 8, fontFamily: 'Poppins_400Regular', letterSpacing: 0.5 },
   dtVal: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold' },
@@ -606,12 +799,12 @@ const main = StyleSheet.create({
   logoutText: { color: '#fff', fontSize: 11, fontFamily: 'Poppins_500Medium' },
   sosBanner: { backgroundColor: '#E74C3C', flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 7 },
   sosBannerText: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold', flex: 1 },
-  workerBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', maxHeight: 50 },
-  wTab: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC', minWidth: 90, maxWidth: 120 },
+  workerBar: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', maxHeight: 80 },
+  wTab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
   wTabActive: { backgroundColor: '#EBF5FB', borderColor: '#1A3C6E' },
-  wDot: { width: 7, height: 7, borderRadius: 4 },
-  wTabTxt: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: '#64748B', flexShrink: 1 },
-  wTabId: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#94A3B8' },
+  wDot: { width: 8, height: 8, borderRadius: 4 },
+  wTabTxt: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: '#1A202C' },
+  wTabId: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#94A3B8', marginTop: 2 },
   content: { padding: 12, paddingBottom: 40, gap: 12 },
   secLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B', letterSpacing: 0.8 },
   grid3: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },

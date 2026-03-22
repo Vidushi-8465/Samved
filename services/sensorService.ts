@@ -218,6 +218,17 @@ export const listenToAllSensors = (
   return () => off(sensorsRef);
 };
 
+export const listenToPreMonitor = (
+  workerId: string,
+  callback: (data: any) => void
+) => {
+  const preRef = ref(rtdb, `sensors/${workerId}/pre_monitor`);
+  onValue(preRef, (snapshot) => {
+    callback(snapshot.exists() ? snapshot.val() : null);
+  });
+  return () => off(preRef);
+};
+
 export const listenToWorkers = (
   managerId: string,
   callback: (workers: WorkerProfile[]) => void
