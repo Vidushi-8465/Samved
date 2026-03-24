@@ -4,7 +4,7 @@ Real-time IoT safety monitoring app for sanitation workers of **Solapur Municipa
 
 ---
 
-## 📋 COMPLETE SETUP GUIDE (Start to End)
+## COMPLETE SETUP GUIDE (Start to End)
 
 ---
 
@@ -129,11 +129,11 @@ node scripts/seedFirebase.js
 
 You should see:
 ```
-✅ Manager seeded
-✅ Workers seeded  
-✅ Alerts seeded
-✅ Sensor data seeded to Realtime DB
-🎉 Done!
+Manager seeded
+ Workers seeded  
+ Alerts seeded
+ Sensor data seeded to Realtime DB
+ Done!
 ```
 
 ### C) Apply Security Rules
@@ -210,7 +210,7 @@ The app will **automatically** update when new sensor data arrives.
 
 ---
 
-## 📁 Project File Structure
+##  Project File Structure
 
 ```
 smc-livemonitor/
@@ -258,7 +258,7 @@ smc-livemonitor/
 
 ---
 
-## 🔑 Key Dependencies
+##  Key Dependencies
 
 | Package | Purpose |
 |---------|---------|
@@ -273,7 +273,7 @@ smc-livemonitor/
 
 ---
 
-## 🚀 Build for Production (APK)
+##  Build for Production (APK)
 
 ```bash
 # Login to Expo
@@ -291,7 +291,7 @@ eas build --platform android --profile production
 
 ---
 
-## 🆘 Troubleshooting
+##  Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -304,5 +304,5 @@ eas build --platform android --profile production
 
 ---
 
-## 📞 Support
+##  Support
 Built for **Solapur Municipal Corporation** — Sanitation Worker Safety Initiative 2025

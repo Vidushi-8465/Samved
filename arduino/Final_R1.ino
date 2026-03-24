@@ -16,11 +16,11 @@
 // Get these from twilio.com/console (free trial, no card needed)
 #define TWILIO_ACCOUNT_SID  "ACae548d0e18174fa94bb2a4bccfdae952"
 #define TWILIO_AUTH_TOKEN   "73edff061113b1d1c75a5f398115bd35"
-#define TWILIO_FROM_NUMBER  " +18777804236"
+#define TWILIO_FROM_NUMBER  "+18777804236"
 
 const char* MANAGER_PHONES[] = {
-  "+91 70580 85334",   // replace with manager's real number e.g. +919876500001
-  "+91 90041 14709",
+  "+917058085334",   // replace with manager's real number e.g. +919876500001
+  "+919004114709",
 };
 const int MANAGER_COUNT = 2;
 
@@ -327,7 +327,7 @@ void handlePreMonitor(String received, int rssi) {
     Firebase.setInt   (fbdo, prePath + "/level3_ch4", l3m4);
     Firebase.setInt   (fbdo, prePath + "/level3_co",  l3m7);
     Firebase.setInt   (fbdo, prePath + "/rssi",        rssi);
-    Firebase.setString(fbdo, path    + "/mode",       "PRE");
+    Firebase.setString(fbdo, path    + "/mode",       "premonitoring");
     Firebase.setString(fbdo, path    + "/status",     "PRE_MONITOR");
 
     Serial.println("Firebase → pre_monitor [" + result + "] ✓");
@@ -407,7 +407,7 @@ void handleContinuous(String received, int rssi) {
   if (WiFi.status() == WL_CONNECTED) {
     String path = "/sensors/" + workerID;
 
-    Firebase.setString(fbdo, path + "/mode",         "CONTINUOUS");
+    Firebase.setString(fbdo, path + "/mode",         "monitoring");
     Firebase.setInt   (fbdo, path + "/hr",           hrToShow);
     Firebase.setInt   (fbdo, path + "/spo2",         spToShow);
     Firebase.setInt   (fbdo, path + "/finger",       fng);
