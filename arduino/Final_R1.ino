@@ -14,8 +14,8 @@
 
 // ── TWILIO SMS CONFIG ──────────────────────
 // Get these from twilio.com/console (free trial, no card needed)
-#define TWILIO_ACCOUNT_SID  "ACae548d0e18174fa94bb2a4bccfdae952"
-#define TWILIO_AUTH_TOKEN   "73edff061113b1d1c75a5f398115bd35"
+const char* accountSID = "YOUR_TWILIO_ACCOUNT_SID";
+// #define TWILIO_AUTH_TOKEN   "73edff061113b1d1c75a5f398115bd35"
 #define TWILIO_FROM_NUMBER  "+18777804236"
 
 const char* MANAGER_PHONES[] = {
