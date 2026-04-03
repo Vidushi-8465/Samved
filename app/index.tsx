@@ -10,6 +10,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
+import SafetyChat from '@/components/SafetyChat';
 
 const { width } = Dimensions.get('window');
 
@@ -57,6 +58,7 @@ export default function HomeScreen() {
   };
 
   return (
+    <>
     <SafeAreaView style={styles.container}>
       {/* Top Government Bar */}
       <View style={styles.govBar}>
@@ -71,7 +73,7 @@ export default function HomeScreen() {
               <MaterialCommunityIcons name="shield-check" size={28} color={Colors.accent} />
             </View>
             <View>
-              <Text style={styles.headerTitle}>SMC LiveMonitor</Text>
+              <Text style={styles.headerTitle}>SurakshaNet</Text>
               <Text style={styles.headerSubtitle}>{T.municipality}</Text>
             </View>
           </View>
@@ -82,7 +84,7 @@ export default function HomeScreen() {
             <Text style={styles.langText}>{language === 'en' ? 'मराठी' : 'EN'}</Text>
           </TouchableOpacity>
         </View>
-
+    
         {/* Nav Strip */}
         <View style={styles.navStrip}>
           {['Home', 'About SMC', 'Services', 'Contact'].map((item) => (
@@ -171,7 +173,7 @@ export default function HomeScreen() {
           <MaterialCommunityIcons name="information" size={20} color={Colors.primaryLight} />
           <Text style={styles.aboutTitle}>About This System</Text>
           <Text style={styles.aboutText}>
-            SMC LiveMonitor is an IoT-powered safety monitoring system deployed by the Solapur Municipal Corporation to ensure the well-being of all sanitation workers across 5 zones of Solapur city. Real-time sensor data including gas levels, body temperature, and GPS location is monitored 24/7.
+            SurakshaNet is an IoT-powered safety monitoring system deployed by the Solapur Municipal Corporation to ensure the well-being of all sanitation workers across 5 zones of Solapur city. Real-time sensor data including gas levels, body temperature, and GPS location is monitored 24/7.
           </Text>
         </View>
 
@@ -190,10 +192,12 @@ export default function HomeScreen() {
           <Text style={styles.footerText}>247, Saat Rasta, Solapur - 413 003, Maharashtra</Text>
           <Text style={styles.footerText}>📞 0217-2723500  |  📧 commissioner@solapurmahanagar.gov.in</Text>
           <View style={styles.footerDivider} />
-          <Text style={styles.footerSmall}>© 2025 SMC. All rights reserved. | SMC LiveMonitor v1.0</Text>
+          <Text style={styles.footerSmall}>© 2025 SMC. All rights reserved. | SurakshaNet v1.0</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
+    <SafetyChat />
+    </>
   );
 }
 

@@ -1,23 +1,35 @@
 // app/(dashboard)/reports.tsx
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Dimensions } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystemModule from 'expo-file-system';
 
-const { width } = Dimensions.get('window');
+const FileSystem = FileSystemModule as any;
 
 type Period = 'today' | 'week' | 'month';
 
-// Simple bar chart rendered in pure React Native — no external chart lib needed
+type ReportAlert = {
+  workerName: string;
+  zone: string;
+  type: string;
+  value: string;
+  resolved: boolean;
+  timestamp: any;
+};
+
 function SimpleBarChart({ data, color }: { data: { label: string; value: number }[]; color: string }) {
-  const max = Math.max(...data.map(d => d.value), 1);
+  const max = Math.max(...data.map((item) => item.value), 1);
+
   return (
     <View style={chartStyles.container}>
-      {data.map((item, i) => (
-        <View key={i} style={chartStyles.barGroup}>
+      {data.map((item) => (
+        <View key={item.label} style={chartStyles.barGroup}>
           <Text style={chartStyles.barValue}>{item.value}</Text>
           <View style={chartStyles.barTrack}>
             <View
@@ -46,43 +58,357 @@ const chartStyles = StyleSheet.create({
   barLabel: { fontSize: 9, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary, textAlign: 'center' },
 });
 
+function getPeriodStart(period: Period) {
+  const now = new Date();
+  if (period === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === 'week') {
+    const start = new Date(now);
+    start.setDate(now.getDate() - 6);
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function timestampToDate(timestamp: any) {
+  if (!timestamp) return null;
+  if (timestamp?.toDate) return timestamp.toDate();
+  return new Date(timestamp);
+}
+
+function isAlertInPeriod(timestamp: any, period: Period) {
+  const date = timestampToDate(timestamp);
+  if (!date) return false;
+  return date >= getPeriodStart(period);
+}
+
+function formatCsvCell(value: unknown) {
+  const text = String(value ?? '');
+  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getTrendData(alerts: ReportAlert[], period: Period) {
+  if (period === 'today') {
+    const labels = ['12a', '4a', '8a', '12p', '4p', '8p'];
+    const buckets = new Array(labels.length).fill(0);
+    alerts.forEach((alert) => {
+      const date = timestampToDate(alert.timestamp);
+      if (!date) return;
+      const bucket = Math.min(Math.floor(date.getHours() / 4), buckets.length - 1);
+      buckets[bucket] += 1;
+    });
+    return labels.map((label, index) => ({ label, value: buckets[index] }));
+  }
+
+  if (period === 'month') {
+    const labels = ['W1', 'W2', 'W3', 'W4'];
+    const buckets = new Array(labels.length).fill(0);
+    alerts.forEach((alert) => {
+      const date = timestampToDate(alert.timestamp);
+      if (!date) return;
+      const bucket = Math.min(Math.floor((date.getDate() - 1) / 7), buckets.length - 1);
+      buckets[bucket] += 1;
+    });
+    return labels.map((label, index) => ({ label, value: buckets[index] }));
+  }
+
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const buckets = new Array(labels.length).fill(0);
+  alerts.forEach((alert) => {
+    const date = timestampToDate(alert.timestamp);
+    if (!date) return;
+    const index = (date.getDay() + 6) % 7;
+    buckets[index] += 1;
+  });
+  return labels.map((label, index) => ({ label, value: buckets[index] }));
+}
+
+function buildReportHtml(params: {
+  period: Period;
+  managerName: string;
+  workersCount: number;
+  totalAlerts: number;
+  resolvedAlerts: number;
+  resolutionRate: number;
+  alertsByType: { label: string; count: number }[];
+  zoneRows: { name: string; workers: number; alerts: number; resolvedRate: number }[];
+  recentAlerts: ReportAlert[];
+}) {
+  const rowsHtml = params.recentAlerts.length > 0
+    ? params.recentAlerts.map((alert) => `
+        <tr>
+          <td>${escapeHtml(timestampToDate(alert.timestamp)?.toLocaleString('en-IN') ?? '--')}</td>
+          <td>${escapeHtml(alert.workerName)}</td>
+          <td>${escapeHtml(alert.zone)}</td>
+          <td>${escapeHtml(alert.type)}</td>
+          <td>${escapeHtml(alert.value)}</td>
+          <td>${alert.resolved ? 'Resolved' : 'Open'}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="6">No alerts in this period</td></tr>';
+
+  const summaryCards = [
+    { label: 'Total Workers', value: params.workersCount },
+    { label: 'Total Alerts', value: params.totalAlerts },
+    { label: 'Resolved', value: params.resolvedAlerts },
+    { label: 'Resolution Rate', value: `${params.resolutionRate}%` },
+  ].map((item) => `<div class="card"><div class="cardLabel">${item.label}</div><div class="cardValue">${item.value}</div></div>`).join('');
+
+  const alertBreakdown = params.alertsByType.map((item) => `<li><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></li>`).join('');
+  const zoneBreakdown = params.zoneRows.map((item) => `<li><span>${escapeHtml(item.name)}</span><span>${item.workers} workers · ${item.alerts} alerts · ${item.resolvedRate}% resolved</span></li>`).join('');
+
+  return `
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body { font-family: Arial, sans-serif; color: #1A202C; padding: 24px; }
+          h1 { margin: 0 0 6px; color: #1A3C6E; }
+          h2 { font-size: 16px; margin: 24px 0 10px; color: #1A3C6E; }
+          .meta { color: #64748B; font-size: 12px; margin-bottom: 16px; }
+          .grid { display: flex; gap: 10px; flex-wrap: wrap; }
+          .card { border: 1px solid #E2E8F0; border-radius: 10px; padding: 12px 14px; min-width: 140px; }
+          .cardLabel { font-size: 11px; color: #64748B; text-transform: uppercase; letter-spacing: .04em; }
+          .cardValue { font-size: 22px; font-weight: 700; color: #1A202C; margin-top: 6px; }
+          ul { padding-left: 18px; }
+          li { margin-bottom: 6px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+          th, td { border-bottom: 1px solid #E2E8F0; text-align: left; padding: 8px 6px; font-size: 12px; }
+          th { color: #64748B; font-size: 11px; text-transform: uppercase; }
+        </style>
+      </head>
+      <body>
+        <h1>SMC LiveMonitor Report</h1>
+        <div class="meta">Period: ${params.period} | Manager: ${escapeHtml(params.managerName)}</div>
+        <div class="grid">${summaryCards}</div>
+        <h2>Alert Breakdown</h2>
+        <ul>${alertBreakdown}</ul>
+        <h2>Zone Performance</h2>
+        <ul>${zoneBreakdown}</ul>
+        <h2>Recent Alerts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Worker</th>
+              <th>Zone</th>
+              <th>Type</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </body>
+    </html>
+  `;
+}
+
+function buildReportCsv(params: {
+  period: Period;
+  managerName: string;
+  workersCount: number;
+  totalAlerts: number;
+  resolvedAlerts: number;
+  resolutionRate: number;
+  alertsByType: { label: string; count: number }[];
+  zoneRows: { name: string; workers: number; alerts: number; resolvedRate: number }[];
+  recentAlerts: ReportAlert[];
+}) {
+  const lines: string[] = [];
+  lines.push('SMC LiveMonitor Report');
+  lines.push(`Period,${formatCsvCell(params.period)}`);
+  lines.push(`Manager,${formatCsvCell(params.managerName)}`);
+  lines.push(`Total Workers,${params.workersCount}`);
+  lines.push(`Total Alerts,${params.totalAlerts}`);
+  lines.push(`Resolved Alerts,${params.resolvedAlerts}`);
+  lines.push(`Resolution Rate,${params.resolutionRate}%`);
+  lines.push('');
+  lines.push('Alert Breakdown');
+  lines.push('Type,Count');
+  params.alertsByType.forEach((item) => {
+    lines.push(`${formatCsvCell(item.label)},${item.count}`);
+  });
+  lines.push('');
+  lines.push('Zone Performance');
+  lines.push('Zone,Workers,Alerts,Resolved Rate');
+  params.zoneRows.forEach((item) => {
+    lines.push(`${formatCsvCell(item.name)},${item.workers},${item.alerts},${item.resolvedRate}%`);
+  });
+  lines.push('');
+  lines.push('Recent Alerts');
+  lines.push('Time,Worker,Zone,Type,Value,Status');
+  params.recentAlerts.forEach((alert) => {
+    const time = timestampToDate(alert.timestamp)?.toLocaleString('en-IN') ?? '--';
+    lines.push([
+      formatCsvCell(time),
+      formatCsvCell(alert.workerName),
+      formatCsvCell(alert.zone),
+      formatCsvCell(alert.type),
+      formatCsvCell(alert.value),
+      alert.resolved ? 'Resolved' : 'Open',
+    ].join(','));
+  });
+
+  return lines.join('\n');
+}
+
+function downloadCsvWeb(csv: string, filename: string) {
+  try {
+    if (typeof document !== 'undefined') {
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  } catch (error) {
+    console.warn('CSV download failed:', error);
+    throw new Error('Could not download CSV file');
+  }
+}
+
 export default function ReportsScreen() {
-  const { language, workers, alerts, sensors, manager } = useStore();
+  const { language, workers, alerts, manager } = useStore();
   const T = getText(language);
   const [period, setPeriod] = useState<Period>('week');
   const [exporting, setExporting] = useState(false);
 
-  const totalAlerts = alerts.length;
-  const resolvedAlerts = alerts.filter(a => a.resolved).length;
-  const sosAlerts = alerts.filter(a => a.type === 'SOS').length;
-  const gasAlerts = alerts.filter(a => a.type.includes('GAS')).length;
+  const periodAlerts = alerts.filter((alert) => isAlertInPeriod(alert.timestamp, period)) as ReportAlert[];
+  const totalAlerts = periodAlerts.length;
+  const resolvedAlerts = periodAlerts.filter((alert) => alert.resolved).length;
+  const sosAlerts = periodAlerts.filter((alert) => alert.type === 'SOS').length;
+  const gasAlerts = periodAlerts.filter((alert) =>
+    alert.type.includes('GAS') || alert.type.includes('CH4') || alert.type.includes('H2S')
+  ).length;
+  const tempAlerts = periodAlerts.filter((alert) => alert.type === 'SPO2_LOW' || alert.type === 'SPO2_CRITICAL').length;
+  const inactiveAlerts = periodAlerts.filter((alert) => alert.type === 'INACTIVITY').length;
+  const heartAlerts = periodAlerts.filter((alert) => alert.type === 'HEARTRATE').length;
   const resolutionRate = totalAlerts > 0 ? Math.round((resolvedAlerts / totalAlerts) * 100) : 100;
 
   const alertsByType = [
     { label: 'SOS', count: sosAlerts, color: Colors.danger, icon: 'alarm-light' },
     { label: 'Gas', count: gasAlerts, color: Colors.warning, icon: 'gas-cylinder' },
-    { label: 'Temp', count: alerts.filter(a => a.type === 'SPO2_LOW' || a.type === 'SPO2_CRITICAL').length, color: Colors.accent, icon: 'thermometer-alert' },
-    { label: 'Inactive', count: alerts.filter(a => a.type === 'INACTIVITY').length, color: Colors.info, icon: 'timer-off' },
-    { label: 'Heart', count: alerts.filter(a => a.type === 'HEARTRATE').length, color: '#9B59B6', icon: 'heart-broken' },
+    { label: 'Temp', count: tempAlerts, color: Colors.accent, icon: 'thermometer-alert' },
+    { label: 'Inactive', count: inactiveAlerts, color: Colors.info, icon: 'timer-off' },
+    { label: 'Heart', count: heartAlerts, color: '#9B59B6', icon: 'heart-broken' },
   ];
 
-  // Weekly mock trend data (in real app, query Firestore by date)
-  const weeklyData = [
-    { label: 'Mon', value: 2 },
-    { label: 'Tue', value: 5 },
-    { label: 'Wed', value: 1 },
-    { label: 'Thu', value: 3 },
-    { label: 'Fri', value: 7 },
-    { label: 'Sat', value: 4 },
-    { label: 'Sun', value: 2 },
-  ];
+  const trendData = getTrendData(periodAlerts, period);
 
-  const handleExportPDF = async () => {
+  const zoneRows = ['north', 'south', 'east', 'west', 'central'].map((zoneId) => {
+    const zoneWorkers = workers.filter((worker) => worker.zone === zoneId);
+    const zoneAlerts = periodAlerts.filter((alert) => alert.zone === zoneId);
+    const zoneResolved = zoneAlerts.filter((alert) => alert.resolved).length;
+    return {
+      name: `${zoneId.charAt(0).toUpperCase() + zoneId.slice(1)} Zone`,
+      workers: zoneWorkers.length,
+      alerts: zoneAlerts.length,
+      resolvedRate: zoneAlerts.length > 0 ? Math.round((zoneResolved / zoneAlerts.length) * 100) : 100,
+    };
+  });
+
+  const recentAlerts = [...periodAlerts]
+    .sort((left, right) => (timestampToDate(right.timestamp)?.getTime() ?? 0) - (timestampToDate(left.timestamp)?.getTime() ?? 0))
+    .slice(0, 20);
+
+  const pdfHtml = buildReportHtml({
+    period,
+    managerName: manager?.name || 'Manager',
+    workersCount: workers.length,
+    totalAlerts,
+    resolvedAlerts,
+    resolutionRate,
+    alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
+    zoneRows,
+    recentAlerts,
+  });
+
+  const csvText = buildReportCsv({
+    period,
+    managerName: manager?.name || 'Manager',
+    workersCount: workers.length,
+    totalAlerts,
+    resolvedAlerts,
+    resolutionRate,
+    alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
+    zoneRows,
+    recentAlerts,
+  });
+
+  const exportPdf = async () => {
     setExporting(true);
-    setTimeout(() => {
+    try {
+      const result = await Print.printToFileAsync({ html: pdfHtml });
+      
+      if (Platform.OS === 'web') {
+        // On web, download the PDF file
+        const blob = await fetch(result.uri).then(res => res.blob());
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `smc-livemonitor-${period}-report.pdf`;
+        link.click();
+        URL.revokeObjectURL(url);
+        Alert.alert('Success', 'PDF downloaded successfully');
+      } else {
+        // On native, share the file if available
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(result.uri, { mimeType: 'application/pdf', dialogTitle: 'Share report PDF' });
+        } else {
+          Alert.alert('PDF ready', result.uri);
+        }
+      }
+    } catch (error: any) {
+      Alert.alert('Export failed', error?.message || 'Could not generate the PDF report.');
+    } finally {
       setExporting(false);
-      Alert.alert('Export Ready', 'In production, integrate expo-print here to generate and share a PDF report.', [{ text: 'OK' }]);
-    }, 1500);
+    }
+  };
+
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const fileName = `smc-livemonitor-${period}-report.csv`;
+      if (Platform.OS === 'web') {
+        downloadCsvWeb(csvText, fileName);
+        Alert.alert('Success', 'CSV downloaded successfully');
+      } else {
+        const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, csvText, { encoding: 'utf8' });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, { mimeType: 'text/csv', dialogTitle: 'Share report CSV' });
+        } else {
+          Alert.alert('CSV ready', fileUri);
+        }
+      }
+    } catch (error: any) {
+      Alert.alert('Export failed', error?.message || 'Could not generate the CSV report.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const showExportMenu = () => {
+    Alert.alert('Export report', 'Choose a format to generate.', [
+      { text: 'PDF', onPress: () => { void exportPdf(); } },
+      { text: 'CSV', onPress: () => { void exportCsv(); } },
+      { text: 'Both', onPress: () => { void exportPdf(); void exportCsv(); } },
+    ]);
   };
 
   return (
@@ -92,29 +418,27 @@ export default function ReportsScreen() {
           <Text style={styles.headerTitle}>{T.dashboard.reports}</Text>
           <Text style={styles.headerSub}>Solapur Municipal Corporation</Text>
         </View>
-        <TouchableOpacity style={styles.exportBtn} onPress={handleExportPDF} disabled={exporting}>
+        <TouchableOpacity style={styles.exportBtn} onPress={showExportMenu} disabled={exporting}>
           <MaterialCommunityIcons name="download" size={18} color={Colors.white} />
-          <Text style={styles.exportBtnText}>{exporting ? 'Generating...' : 'Export PDF'}</Text>
+          <Text style={styles.exportBtnText}>{exporting ? 'Working...' : 'Export'}</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: Spacing.md, gap: Spacing.md, paddingBottom: 80 }}>
-        {/* Period Selector */}
         <View style={styles.periodRow}>
-          {(['today', 'week', 'month'] as Period[]).map(p => (
+          {(['today', 'week', 'month'] as Period[]).map((value) => (
             <TouchableOpacity
-              key={p}
-              style={[styles.periodBtn, period === p && styles.periodBtnActive]}
-              onPress={() => setPeriod(p)}
+              key={value}
+              style={[styles.periodBtn, period === value && styles.periodBtnActive]}
+              onPress={() => setPeriod(value)}
             >
-              <Text style={[styles.periodText, period === p && styles.periodTextActive]}>
-                {p.charAt(0).toUpperCase() + p.slice(1)}
+              <Text style={[styles.periodText, period === value && styles.periodTextActive]}>
+                {value.charAt(0).toUpperCase() + value.slice(1)}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        {/* Summary Card */}
         <View style={styles.summaryCard}>
           <Text style={styles.cardTitle}>📊 Summary Report</Text>
           <Text style={styles.cardSub}>Period: This {period} • Manager: {manager?.name}</Text>
@@ -124,61 +448,51 @@ export default function ReportsScreen() {
               { label: 'Total Alerts', value: String(totalAlerts), icon: 'alarm-light', color: Colors.danger },
               { label: 'Resolved', value: String(resolvedAlerts), icon: 'check-circle', color: Colors.success },
               { label: 'Resolution Rate', value: `${resolutionRate}%`, icon: 'percent', color: Colors.accent },
-            ].map(s => (
-              <View key={s.label} style={styles.summaryItem}>
-                <MaterialCommunityIcons name={s.icon as any} size={20} color={s.color} />
-                <Text style={[styles.summaryValue, { color: s.color }]}>{s.value}</Text>
-                <Text style={styles.summaryLabel}>{s.label}</Text>
+            ].map((summary) => (
+              <View key={summary.label} style={styles.summaryItem}>
+                <MaterialCommunityIcons name={summary.icon as any} size={20} color={summary.color} />
+                <Text style={[styles.summaryValue, { color: summary.color }]}>{summary.value}</Text>
+                <Text style={styles.summaryLabel}>{summary.label}</Text>
               </View>
             ))}
           </View>
         </View>
 
-        {/* Weekly Alert Trend Chart */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>📈 Weekly Alert Trend</Text>
-          <Text style={styles.cardSub}>Alerts per day this week</Text>
-          <SimpleBarChart data={weeklyData} color={Colors.primary} />
+          <Text style={styles.cardTitle}>📈 Alert Trend</Text>
+          <Text style={styles.cardSub}>Alerts during the selected period</Text>
+          <SimpleBarChart data={trendData} color={Colors.primary} />
         </View>
 
-        {/* Alerts Breakdown */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🚨 Alert Breakdown</Text>
-          {alertsByType.map(a => (
-            <View key={a.label} style={styles.alertRow}>
-              <MaterialCommunityIcons name={a.icon as any} size={18} color={a.color} />
-              <Text style={styles.alertRowLabel}>{a.label}</Text>
+          {alertsByType.map((item) => (
+            <View key={item.label} style={styles.alertRow}>
+              <MaterialCommunityIcons name={item.icon as any} size={18} color={item.color} />
+              <Text style={styles.alertRowLabel}>{item.label}</Text>
               <View style={styles.alertBarTrack}>
-                <View style={[styles.alertBar, { width: `${totalAlerts > 0 ? (a.count / totalAlerts) * 100 : 0}%`, backgroundColor: a.color }]} />
+                <View style={[styles.alertBar, { width: `${totalAlerts > 0 ? (item.count / totalAlerts) * 100 : 0}%`, backgroundColor: item.color }]} />
               </View>
-              <Text style={[styles.alertRowCount, { color: a.color }]}>{a.count}</Text>
+              <Text style={[styles.alertRowCount, { color: item.color }]}>{item.count}</Text>
             </View>
           ))}
         </View>
 
-        {/* Zone Report */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🗺️ Zone Performance</Text>
-          {['north', 'south', 'east', 'west', 'central'].map(zoneId => {
-            const zoneWorkers = workers.filter(w => w.zone === zoneId);
-            const zoneAlerts = alerts.filter(a => a.zone === zoneId);
-            const zoneResolved = zoneAlerts.filter(a => a.resolved).length;
-            const rate = zoneAlerts.length > 0 ? Math.round((zoneResolved / zoneAlerts.length) * 100) : 100;
-            return (
-              <View key={zoneId} style={styles.zoneRow}>
-                <View style={styles.zoneRowLeft}>
-                  <Text style={styles.zoneRowName}>{zoneId.charAt(0).toUpperCase() + zoneId.slice(1)} Zone</Text>
-                  <Text style={styles.zoneRowMeta}>{zoneWorkers.length} workers • {zoneAlerts.length} alerts</Text>
-                </View>
-                <View style={[styles.rateChip, { backgroundColor: rate === 100 ? Colors.successBg : rate > 70 ? Colors.warningBg : Colors.dangerBg }]}>
-                  <Text style={[styles.rateText, { color: rate === 100 ? Colors.success : rate > 70 ? Colors.warning : Colors.danger }]}>{rate}%</Text>
-                </View>
+          {zoneRows.map((zone) => (
+            <View key={zone.name} style={styles.zoneRow}>
+              <View style={styles.zoneRowLeft}>
+                <Text style={styles.zoneRowName}>{zone.name}</Text>
+                <Text style={styles.zoneRowMeta}>{zone.workers} workers • {zone.alerts} alerts</Text>
               </View>
-            );
-          })}
+              <View style={[styles.rateChip, { backgroundColor: zone.resolvedRate === 100 ? Colors.successBg : zone.resolvedRate > 70 ? Colors.warningBg : Colors.dangerBg }]}>
+                <Text style={[styles.rateText, { color: zone.resolvedRate === 100 ? Colors.success : zone.resolvedRate > 70 ? Colors.warning : Colors.danger }]}>{zone.resolvedRate}%</Text>
+              </View>
+            </View>
+          ))}
         </View>
 
-        {/* Safety Compliance */}
         <View style={[styles.card, { backgroundColor: Colors.primary }]}>
           <View style={styles.complianceHeader}>
             <MaterialCommunityIcons name="shield-check" size={24} color={Colors.accent} />

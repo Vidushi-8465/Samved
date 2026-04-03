@@ -9,6 +9,7 @@ export interface SensorData {
   // Gas sensors
   ch4: number;            // CH4 PPM (MQ4)
   h2s: number;            // CO PPM (MQ7) — your MQ7 reads CO
+  co?: number;            // Alias used by some dashboard cards
   gasAlert: number;       // 0=safe 1=ch4warn 2=ch4danger 3=cowarn 4=codanger 5=both
   gasWarming: boolean;    // true = sensors still warming up
   // Worker vitals
@@ -64,6 +65,35 @@ export interface Alert {
 
 export type SafetyStatus = 'safe' | 'warning' | 'danger' | 'offline';
 
+export const SENSOR_THRESHOLDS = {
+  ch4: {
+    warningMin: 1000,
+    dangerMin: 5000,
+    unit: 'ppm',
+  },
+  co: {
+    warningMin: 50,
+    dangerMin: 200,
+    unit: 'ppm',
+  },
+  heartRate: {
+    warningLow: 60,
+    warningHigh: 120,
+    dangerLow: 50,
+    dangerHigh: 130,
+    unit: 'BPM',
+  },
+  spO2: {
+    warningMin: 95,
+    dangerMin: 90,
+    unit: '%',
+  },
+  signal: {
+    warningBelow: -100,
+    unit: 'dBm',
+  },
+} as const;
+
 // ── Status from sensor data ───────────────────────────────────
 export interface SensorStatus {
   overall: SafetyStatus;
@@ -76,25 +106,27 @@ export interface SensorStatus {
 }
 
 export const getSensorStatus = (sensor: SensorData): SensorStatus => {
+  const coValue = sensor.co ?? sensor.h2s;
+
   // CH4 (MQ4) thresholds — PPM based
   const ch4: SafetyStatus =
-    sensor.ch4 >= 5000 ? 'danger' :
-    sensor.ch4 >= 1000 ? 'warning' : 'safe';
+    sensor.ch4 >= SENSOR_THRESHOLDS.ch4.dangerMin ? 'danger' :
+    sensor.ch4 >= SENSOR_THRESHOLDS.ch4.warningMin ? 'warning' : 'safe';
 
   // CO (MQ7) thresholds — PPM based
   const h2s: SafetyStatus =
-    sensor.h2s >= 200 ? 'danger' :
-    sensor.h2s >= 50  ? 'warning' : 'safe';
+    coValue >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
+    coValue >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
 
   // Heart rate
   const heartRate: SafetyStatus =
-    sensor.heartRate > 0 && (sensor.heartRate < 50 || sensor.heartRate > 130) ? 'danger' :
-    sensor.heartRate > 0 && (sensor.heartRate < 60 || sensor.heartRate > 120) ? 'warning' : 'safe';
+    sensor.heartRate > 0 && (sensor.heartRate < SENSOR_THRESHOLDS.heartRate.dangerLow || sensor.heartRate > SENSOR_THRESHOLDS.heartRate.dangerHigh) ? 'danger' :
+    sensor.heartRate > 0 && (sensor.heartRate < SENSOR_THRESHOLDS.heartRate.warningLow || sensor.heartRate > SENSOR_THRESHOLDS.heartRate.warningHigh) ? 'warning' : 'safe';
 
   // SpO2
   const spO2: SafetyStatus =
-    sensor.spO2 > 0 && sensor.spO2 < 90 ? 'danger' :
-    sensor.spO2 > 0 && sensor.spO2 < 95 ? 'warning' : 'safe';
+    sensor.spO2 > 0 && sensor.spO2 < SENSOR_THRESHOLDS.spO2.dangerMin ? 'danger' :
+    sensor.spO2 > 0 && sensor.spO2 < SENSOR_THRESHOLDS.spO2.warningMin ? 'warning' : 'safe';
 
   // Fall / motion
   const fall: SafetyStatus =
@@ -103,7 +135,7 @@ export const getSensorStatus = (sensor: SensorData): SensorStatus => {
 
   // LoRa signal
   const signal: SafetyStatus =
-    sensor.rssi < -100 ? 'warning' : 'safe';
+    sensor.rssi < SENSOR_THRESHOLDS.signal.warningBelow ? 'warning' : 'safe';
 
   const statuses = [ch4, h2s, heartRate, spO2, fall];
   const overall: SafetyStatus =
@@ -142,6 +174,7 @@ export const listenToWorkerSensor = (
         workerId,
         ch4: raw.mq4_ppm ?? 0,
         h2s: raw.mq7_ppm ?? 0,
+        co: raw.mq7_ppm ?? 0,
         gasAlert: raw.gas_alert ?? 0,
         gasWarming: raw.gasWarming ?? false,
         heartRate: raw.hr ?? 0,
@@ -187,6 +220,7 @@ export const listenToAllSensors = (
             workerId: id,
             ch4: raw.mq4_ppm ?? 0,           // CH4 from MQ4
             h2s: raw.mq7_ppm ?? 0,           // H2S from MQ7
+            co: raw.mq7_ppm ?? 0,
             gasAlert: raw.gas_alert ?? 0,
             gasWarming: raw.gasWarming ?? false,
             heartRate: raw.hr ?? 0,          // Heart rate

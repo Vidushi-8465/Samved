@@ -1,15 +1,29 @@
 // app/(dashboard)/workers.tsx
 import React, { useState } from 'react';
-import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Modal, ScrollView } from 'react-native';
+import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Modal, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import { getSafetyStatus, getSensorStatus, SOLAPUR_ZONES, WorkerProfile, SensorData } from '@/services/sensorService';
+import { db } from '@/services/firebase';
+import { collection, doc, setDoc } from 'firebase/firestore';
 
 const STATUS_COLORS = { safe: Colors.success, warning: Colors.warning, danger: Colors.danger, offline: Colors.textMuted };
 const STATUS_BG = { safe: Colors.successBg, warning: Colors.warningBg, danger: Colors.dangerBg, offline: Colors.border };
+
+const SHIFT_OPTIONS: WorkerProfile['shift'][] = ['morning', 'afternoon', 'night'];
+
+const createEmptyForm = () => ({
+  name: '',
+  employeeId: '',
+  phone: '',
+  bloodGroup: '',
+  emergencyContact: '',
+  zone: SOLAPUR_ZONES[0]?.id ?? 'north',
+  shift: 'morning' as WorkerProfile['shift'],
+});
 
 function WorkerDetailModal({ worker, sensor, onClose }: { worker: WorkerProfile; sensor?: SensorData; onClose: () => void }) {
   const status = sensor ? getSafetyStatus(sensor) : 'safe';
@@ -152,11 +166,14 @@ function WorkerDetailModal({ worker, sensor, onClose }: { worker: WorkerProfile;
 }
 
 export default function WorkersScreen() {
-  const { language, workers, sensors } = useStore();
+  const { language, workers, sensors, manager, setWorkers } = useStore();
   const T = getText(language);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [selectedWorker, setSelectedWorker] = useState<WorkerProfile | null>(null);
+  const [showAddWorker, setShowAddWorker] = useState(false);
+  const [savingWorker, setSavingWorker] = useState(false);
+  const [form, setForm] = useState(createEmptyForm());
 
   const filtered = workers.filter(w => {
     const matchSearch = w.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -167,11 +184,67 @@ export default function WorkersScreen() {
     return matchSearch && matchStatus;
   });
 
+  const handleAddWorker = async () => {
+    const trimmedName = form.name.trim();
+    const trimmedEmployeeId = form.employeeId.trim();
+    const trimmedPhone = form.phone.trim();
+    const trimmedBloodGroup = form.bloodGroup.trim();
+    const trimmedEmergencyContact = form.emergencyContact.trim();
+
+    if (!trimmedName || !trimmedEmployeeId || !trimmedPhone || !trimmedBloodGroup || !trimmedEmergencyContact) {
+      Alert.alert('Missing details', 'Please fill in all required worker fields.');
+      return;
+    }
+
+    if (workers.some((worker) => worker.employeeId.toLowerCase() === trimmedEmployeeId.toLowerCase())) {
+      Alert.alert('Duplicate worker', 'A worker with this Employee ID already exists.');
+      return;
+    }
+
+    if (!manager) {
+      Alert.alert('Session expired', 'Please log in again and retry.');
+      return;
+    }
+
+    setSavingWorker(true);
+    try {
+      const workerId = doc(collection(db, 'workers')).id;
+      const newWorker: WorkerProfile = {
+        id: workerId,
+        name: trimmedName,
+        nameMarathi: trimmedName,
+        employeeId: trimmedEmployeeId,
+        zone: form.zone,
+        shift: form.shift,
+        phone: trimmedPhone,
+        managerId: manager.uid,
+        bloodGroup: trimmedBloodGroup,
+        emergencyContact: trimmedEmergencyContact,
+      };
+
+      await setDoc(doc(db, 'workers', workerId), newWorker);
+      setWorkers([...workers, newWorker]);
+      setForm(createEmptyForm());
+      setShowAddWorker(false);
+      Alert.alert('Worker added', `${newWorker.name} was added successfully.`);
+    } catch (error: any) {
+      Alert.alert('Could not add worker', error?.message || 'Please try again.');
+    } finally {
+      setSavingWorker(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>{T.dashboard.workers}</Text>
-        <Text style={styles.headerCount}>{filtered.length} / {workers.length}</Text>
+        <View>
+          <Text style={styles.headerTitle}>{T.dashboard.workers}</Text>
+          <Text style={styles.headerCount}>{filtered.length} / {workers.length}</Text>
+        </View>
+        <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddWorker(true)}>
+          <MaterialCommunityIcons name="account-plus" size={18} color={Colors.white} />
+          <Text style={styles.addBtnText}>{T.dashboard.addWorker}</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.searchBar}>
@@ -279,6 +352,86 @@ export default function WorkersScreen() {
           onClose={() => setSelectedWorker(null)}
         />
       )}
+
+      <Modal visible={showAddWorker} transparent animationType="slide" onRequestClose={() => setShowAddWorker(false)}>
+        <View style={styles.formOverlay}>
+          <View style={styles.formCard}>
+            <View style={styles.formHeader}>
+              <View>
+                <Text style={styles.formTitle}>{T.dashboard.addWorker}</Text>
+                <Text style={styles.formSub}>Enter the required worker details</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowAddWorker(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12, paddingBottom: 8 }}>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Name</Text>
+                <TextInput style={styles.fieldInput} value={form.name} onChangeText={(value) => setForm((prev) => ({ ...prev, name: value }))} placeholder="Worker name" />
+              </View>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Employee ID</Text>
+                <TextInput style={styles.fieldInput} value={form.employeeId} onChangeText={(value) => setForm((prev) => ({ ...prev, employeeId: value }))} placeholder="SMC-2026-001" autoCapitalize="characters" />
+              </View>
+              <View style={styles.fieldRow}>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.fieldLabel}>Phone</Text>
+                  <TextInput style={styles.fieldInput} value={form.phone} onChangeText={(value) => setForm((prev) => ({ ...prev, phone: value }))} placeholder="Mobile number" keyboardType="phone-pad" />
+                </View>
+                <View style={styles.fieldHalf}>
+                  <Text style={styles.fieldLabel}>Blood Group</Text>
+                  <TextInput style={styles.fieldInput} value={form.bloodGroup} onChangeText={(value) => setForm((prev) => ({ ...prev, bloodGroup: value }))} placeholder="B+" autoCapitalize="characters" />
+                </View>
+              </View>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Emergency Contact</Text>
+                <TextInput style={styles.fieldInput} value={form.emergencyContact} onChangeText={(value) => setForm((prev) => ({ ...prev, emergencyContact: value }))} placeholder="Emergency phone" keyboardType="phone-pad" />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Zone</Text>
+                <View style={styles.chipWrap}>
+                  {SOLAPUR_ZONES.map((zone) => (
+                    <TouchableOpacity
+                      key={zone.id}
+                      style={[styles.chip, form.zone === zone.id && styles.chipActive]}
+                      onPress={() => setForm((prev) => ({ ...prev, zone: zone.id }))}
+                    >
+                      <Text style={[styles.chipText, form.zone === zone.id && styles.chipTextActive]}>{zone.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Shift</Text>
+                <View style={styles.chipWrap}>
+                  {SHIFT_OPTIONS.map((shift) => (
+                    <TouchableOpacity
+                      key={shift}
+                      style={[styles.chip, form.shift === shift && styles.chipActive]}
+                      onPress={() => setForm((prev) => ({ ...prev, shift }))}
+                    >
+                      <Text style={[styles.chipText, form.shift === shift && styles.chipTextActive]}>{shift}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </ScrollView>
+
+            <View style={styles.formActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAddWorker(false)} disabled={savingWorker}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleAddWorker} disabled={savingWorker}>
+                {savingWorker ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.saveBtnText}>Save Worker</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -288,6 +441,8 @@ const styles = StyleSheet.create({
   header: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md },
   headerTitle: { color: Colors.white, fontSize: 18, fontFamily: 'Poppins_700Bold' },
   headerCount: { color: '#B8C8D8', fontSize: 13, fontFamily: 'Poppins_400Regular' },
+  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.accent, paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.full },
+  addBtnText: { color: Colors.white, fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.white, margin: Spacing.md, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.md, gap: 8, ...Shadows.sm },
   searchInput: { flex: 1, paddingVertical: 11, fontSize: 14, fontFamily: 'Poppins_400Regular', color: Colors.textPrimary },
   filters: { flexDirection: 'row', paddingHorizontal: Spacing.md, gap: 8, marginBottom: Spacing.sm },
@@ -340,4 +495,24 @@ const styles = StyleSheet.create({
   modeText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
   noSensor: { alignItems: 'center', padding: Spacing.xl, gap: 8 },
   noSensorText: { color: Colors.textMuted, fontFamily: 'Poppins_400Regular' },
+  formOverlay: { flex: 1, backgroundColor: 'rgba(10, 31, 61, 0.55)', justifyContent: 'center', padding: Spacing.md },
+  formCard: { backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.md, maxHeight: '88%', ...Shadows.lg },
+  formHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: Spacing.md },
+  formTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: Colors.textPrimary },
+  formSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary, marginTop: 4 },
+  fieldGroup: { gap: 6 },
+  fieldRow: { flexDirection: 'row', gap: 10 },
+  fieldHalf: { flex: 1, gap: 6 },
+  fieldLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary },
+  fieldInput: { borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 10, fontFamily: 'Poppins_400Regular', color: Colors.textPrimary, backgroundColor: Colors.surfaceSecondary },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { borderWidth: 1, borderColor: Colors.border, borderRadius: BorderRadius.full, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: Colors.surfaceSecondary },
+  chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: Colors.textSecondary },
+  chipTextActive: { color: Colors.white },
+  formActions: { flexDirection: 'row', gap: 10, marginTop: Spacing.md },
+  cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceSecondary, borderWidth: 1, borderColor: Colors.border },
+  cancelBtnText: { color: Colors.textSecondary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
+  saveBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: BorderRadius.md, backgroundColor: Colors.accent },
+  saveBtnText: { color: Colors.white, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
 });

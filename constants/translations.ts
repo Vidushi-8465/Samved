@@ -45,6 +45,7 @@ export const t = {
     dashboard: {
       overview: 'Overview',
       workers: 'Workers',
+      addWorker: 'Add Worker',
       alerts: 'Alerts',
       zones: 'Zones',
       reports: 'Reports',
@@ -138,6 +139,7 @@ export const t = {
     dashboard: {
       overview: 'सारांश',
       workers: 'कामगार',
+      addWorker: 'कामगार जोडा',
       alerts: 'अलर्ट',
       zones: 'क्षेत्र',
       reports: 'अहवाल',

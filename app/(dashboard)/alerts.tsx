@@ -1,5 +1,5 @@
 // app/(dashboard)/alerts.tsx
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,6 +7,7 @@ import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import { resolveAlert, Alert as AlertType } from '@/services/sensorService';
+import { playAlertSound } from '@/utils/alertSound';
 
 const ALERT_ICONS: Record<string, string> = {
   SOS: 'alarm-light',
@@ -32,6 +33,30 @@ export default function AlertsScreen() {
   const { language, alerts, manager, setAlerts } = useStore();
   const T = getText(language);
   const [activeFilter, setActiveFilter] = useState('All');
+  const seenAlertIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (alerts.length === 0) return;
+
+    if (seenAlertIds.current.size === 0) {
+      seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+      return;
+    }
+
+    const newAlert = [...alerts]
+      .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
+      .sort((left, right) => {
+        const leftTs = (left.timestamp as any)?.toMillis?.() ?? 0;
+        const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
+        return rightTs - leftTs;
+      })[0];
+
+    if (newAlert) {
+      playAlertSound(newAlert);
+    }
+
+    seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+  }, [alerts]);
 
   const filtered = alerts.filter(a => {
     if (activeFilter === 'All') return true;

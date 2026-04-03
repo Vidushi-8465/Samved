@@ -12,18 +12,34 @@ import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import {
   listenToWorkers, listenToAlerts, listenToAllSensors,
-  getSensorStatus, SOLAPUR_ZONES, SensorData, Alert
+  getSensorStatus, SOLAPUR_ZONES, SENSOR_THRESHOLDS, SensorData, Alert, SafetyStatus
 } from '@/services/sensorService';
 import { logoutManager } from '@/services/authService';
 import { ref, onValue, off } from 'firebase/database';
 import { rtdb } from '@/services/firebase';
+import { playAlertSound } from '@/utils/alertSound';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
 
-const STATUS_COLOR = { safe: '#2ECC71', warning: '#F39C12', danger: '#E74C3C' };
-const STATUS_BG    = { safe: '#E8F8F0', warning: '#FEF9E7', danger: '#FDEDEC' };
-const STATUS_TEXT  = { safe: '#27AE60', warning: '#E67E22', danger: '#C0392B' };
+const STATUS_COLOR: Record<SafetyStatus, string> = {
+  safe: '#2ECC71',
+  warning: '#F39C12',
+  danger: '#E74C3C',
+  offline: '#94A3B8',
+};
+const STATUS_BG: Record<SafetyStatus, string> = {
+  safe: '#E8F8F0',
+  warning: '#FEF9E7',
+  danger: '#FDEDEC',
+  offline: '#F1F5F9',
+};
+const STATUS_TEXT: Record<SafetyStatus, string> = {
+  safe: '#27AE60',
+  warning: '#E67E22',
+  danger: '#C0392B',
+  offline: '#64748B',
+};
 
 function useRealTimeClock() {
   const [now, setNow] = useState(new Date());
@@ -35,9 +51,9 @@ function useRealTimeClock() {
 }
 
 // SOS Modal
-function SOSModal({ alerts, onDismiss }) {
+function SOSModal({ alerts, onDismiss }: { alerts: Alert[]; onDismiss: () => void }) {
   const pulse = useRef(new Animated.Value(1)).current;
-  const active = alerts.filter(a => (a.type === 'SOS' || a.type === 'FALL') && !a.resolved);
+  const active = alerts.filter((alert) => (alert.type === 'SOS' || alert.type === 'FALL') && !alert.resolved);
   useEffect(() => {
     if (active.length === 0) return;
     Animated.loop(
@@ -55,12 +71,12 @@ function SOSModal({ alerts, onDismiss }) {
           <MaterialCommunityIcons name="alarm-light" size={52} color="#fff" />
           <Text style={ss.title}>EMERGENCY ALERT</Text>
           <Text style={ss.sub}>{active.length} worker{active.length > 1 ? 's require' : ' requires'} immediate response</Text>
-          {active.map(a => (
-            <View key={a.id} style={ss.row}>
+          {active.map((alert) => (
+            <View key={alert.id} style={ss.row}>
               <MaterialCommunityIcons name="account-hard-hat" size={18} color="#fff" />
               <View style={{ flex: 1 }}>
-                <Text style={ss.wName}>{a.workerName}</Text>
-                <Text style={ss.wSub}>{a.manholeId} · {a.zone} · {a.type === 'FALL' ? 'Fall Detected' : 'SOS Pressed'}</Text>
+                <Text style={ss.wName}>{alert.workerName}</Text>
+                <Text style={ss.wSub}>{alert.manholeId} · {alert.zone} · {alert.type === 'FALL' ? 'Fall Detected' : 'SOS Pressed'}</Text>
               </View>
             </View>
           ))}
@@ -85,7 +101,7 @@ const ss = StyleSheet.create({
 });
 
 // Env Parameter Card
-function EnvCard({ label, value, unit, status }) {
+function EnvCard({ label, value, unit, status }: { label: string; value: string | number; unit: string; status: SafetyStatus }) {
   const s = status || 'safe';
   return (
     <View style={[ec.card, { borderTopColor: STATUS_COLOR[s], borderTopWidth: 2 }]}>
@@ -115,7 +131,7 @@ const ec = StyleSheet.create({
 });
 
 // Worker Condition Card
-function WorkerConditionCard({ sensor, workerEmployeeId }) {
+function WorkerConditionCard({ sensor, workerEmployeeId }: { sensor?: SensorData | null; workerEmployeeId: string }) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const isActive = !!sensor;
   const isFall = sensor?.fallDetected;
@@ -210,7 +226,7 @@ const wc = StyleSheet.create({
 });
 
 // System Status Card
-function SystemStatusCard({ sensor, managerName }) {
+function SystemStatusCard({ sensor, managerName }: { sensor?: SensorData | null; managerName: string }) {
   const [uptime, setUptime] = useState('00:00:00');
   const startRef = useRef(Date.now());
   useEffect(() => {
@@ -259,7 +275,7 @@ const sys = StyleSheet.create({
 });
 
 // Alerts & Logs Card
-function AlertsLogCard({ alerts }) {
+function AlertsLogCard({ alerts }: { alerts: Alert[] }) {
   const ALERT_COLOR = {
     SOS:'#C0392B', FALL:'#C0392B', CH4_CRITICAL:'#C0392B', H2S_CRITICAL:'#C0392B',
     CO_HIGH:'#C0392B', SPO2_CRITICAL:'#C0392B', CH4_HIGH:'#E67E22', H2S_HIGH:'#E67E22',
@@ -278,7 +294,8 @@ function AlertsLogCard({ alerts }) {
     SPO2_LOW:'SpO₂ below safe level.', SPO2_CRITICAL:'SpO₂ critically low.',
     HEARTRATE:'Heart rate abnormal.', INACTIVITY:'Worker inactive > 30s.',
   };
-  const fmtTime = (ts) => {
+  type AlertTypeKey = keyof typeof ALERT_COLOR;
+  const fmtTime = (ts: any) => {
     if (!ts) return '--:--:--';
     const d = ts.toDate?.() || new Date(ts);
     return d.toTimeString().slice(0, 8);
@@ -290,10 +307,10 @@ function AlertsLogCard({ alerts }) {
         <Text style={al.count}>{alerts.length} Events</Text>
       </View>
       <ScrollView style={{ maxHeight: 220 }} showsVerticalScrollIndicator={false}>
-        {alerts.slice(0, 12).map(a => (
-          <View key={a.id} style={[al.row, { borderLeftColor: ALERT_COLOR[a.type] || '#E67E22', backgroundColor: ALERT_BG[a.type] || '#FEF9E7' }]}>
-            <Text style={[al.time, { color: ALERT_COLOR[a.type] || '#E67E22' }]}>{fmtTime(a.timestamp)}</Text>
-            <Text style={al.msg}>{LABEL[a.type] || a.type}</Text>
+        {alerts.slice(0, 12).map((alert) => (
+          <View key={alert.id} style={[al.row, { borderLeftColor: ALERT_COLOR[alert.type as AlertTypeKey] || '#E67E22', backgroundColor: ALERT_BG[alert.type as AlertTypeKey] || '#FEF9E7' }]}>
+            <Text style={[al.time, { color: ALERT_COLOR[alert.type as AlertTypeKey] || '#E67E22' }]}>{fmtTime(alert.timestamp)}</Text>
+            <Text style={al.msg}>{LABEL[alert.type as AlertTypeKey] || alert.type}</Text>
           </View>
         ))}
         {alerts.length === 0 && (
@@ -319,25 +336,72 @@ const al = StyleSheet.create({
 });
 
 // Threshold Status Card
-function ThresholdCard({ sensor }) {
+function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
   const status = sensor ? getSensorStatus(sensor) : null;
-  const rows = [
-    { label: 'CH₄ Gas Breach', badge: !sensor ? 'No Data' : status?.ch4 === 'danger' ? `Critical — ${sensor.ch4.toFixed(1)}% LEL` : status?.ch4 === 'warning' ? `Elevated — ${sensor.ch4.toFixed(1)}% LEL` : 'Within Limit', st: status?.ch4 ?? 'safe' },
-    { label: 'H₂S Level', badge: !sensor ? 'No Data' : status?.h2s === 'danger' ? `Critical — ${sensor.h2s.toFixed(1)} PPM` : status?.h2s === 'warning' ? `Elevated — ${sensor.h2s.toFixed(1)} PPM` : 'Within Limit', st: status?.h2s ?? 'safe' },
-    { label: 'CO Warning', badge: !sensor ? 'No Data' : (sensor.co ?? 0) > 50 ? `High — ${sensor.co} PPM` : (sensor.co ?? 0) > 25 ? `Elevated — ${sensor.co} PPM` : 'Within Limit', st: (sensor?.co ?? 0) > 50 ? 'danger' : (sensor?.co ?? 0) > 25 ? 'warning' : 'safe' },
-    { label: 'SpO₂ Level', badge: !sensor ? 'No Data' : status?.spO2 === 'danger' ? `Critical — ${sensor.spO2}%` : status?.spO2 === 'warning' ? `Low — ${sensor.spO2}%` : `Adequate — ${sensor.spO2}%`, st: status?.spO2 ?? 'safe' },
-    { label: 'Heart Rate', badge: !sensor ? 'No Data' : status?.heartRate === 'danger' ? `Critical — ${sensor.heartRate} BPM` : status?.heartRate === 'warning' ? `Elevated — ${sensor.heartRate} BPM` : `Normal — ${sensor.heartRate} BPM`, st: status?.heartRate ?? 'safe' },
-    { label: 'Fall Detection', badge: sensor?.fallDetected ? 'FALL DETECTED' : 'No Event', st: sensor?.fallDetected ? 'danger' : 'safe' },
+  const coValue = sensor?.co ?? sensor?.h2s ?? 0;
+  const hasFall = !!sensor?.fallDetected || !!sensor?.sosTriggered;
+
+  const rows: Array<{
+    label: string;
+    current: string;
+    statusLabel: string;
+    limits: string;
+    st: SafetyStatus;
+  }> = [
+    {
+      label: 'Methane (CH₄)',
+      current: sensor ? `${sensor.ch4.toFixed(1)} % LEL` : 'No data',
+      statusLabel: !sensor ? 'No Data' : status?.ch4 === 'danger' ? 'Critical' : status?.ch4 === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${SENSOR_THRESHOLDS.ch4.warningMin} ppm  |  Warning: ${SENSOR_THRESHOLDS.ch4.warningMin}-${SENSOR_THRESHOLDS.ch4.dangerMin - 1} ppm  |  Danger: ≥ ${SENSOR_THRESHOLDS.ch4.dangerMin} ppm`,
+      st: status?.ch4 ?? 'safe',
+    },
+    {
+      label: 'CO (MQ7)',
+      current: sensor ? `${coValue.toFixed(1)} ppm` : 'No data',
+      statusLabel: !sensor ? 'No Data' : status?.h2s === 'danger' ? 'Critical' : status?.h2s === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${SENSOR_THRESHOLDS.co.warningMin} ppm  |  Warning: ${SENSOR_THRESHOLDS.co.warningMin}-${SENSOR_THRESHOLDS.co.dangerMin - 1} ppm  |  Danger: ≥ ${SENSOR_THRESHOLDS.co.dangerMin} ppm`,
+      st: status?.h2s ?? 'safe',
+    },
+    {
+      label: 'SpO₂',
+      current: sensor ? `${sensor.spO2}%` : 'No data',
+      statusLabel: !sensor ? 'No Data' : status?.spO2 === 'danger' ? 'Critical' : status?.spO2 === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: ≥ ${SENSOR_THRESHOLDS.spO2.warningMin}%  |  Warning: ${SENSOR_THRESHOLDS.spO2.dangerMin}-${SENSOR_THRESHOLDS.spO2.warningMin - 1}%  |  Danger: < ${SENSOR_THRESHOLDS.spO2.dangerMin}%`,
+      st: status?.spO2 ?? 'safe',
+    },
+    {
+      label: 'Heart Rate',
+      current: sensor ? `${sensor.heartRate} BPM` : 'No data',
+      statusLabel: !sensor ? 'No Data' : status?.heartRate === 'danger' ? 'Critical' : status?.heartRate === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: ${SENSOR_THRESHOLDS.heartRate.warningLow}-${SENSOR_THRESHOLDS.heartRate.warningHigh} BPM  |  Warning: ${SENSOR_THRESHOLDS.heartRate.dangerLow}-${SENSOR_THRESHOLDS.heartRate.warningLow - 1} or ${SENSOR_THRESHOLDS.heartRate.warningHigh + 1}-${SENSOR_THRESHOLDS.heartRate.dangerHigh} BPM  |  Danger: < ${SENSOR_THRESHOLDS.heartRate.dangerLow} or > ${SENSOR_THRESHOLDS.heartRate.dangerHigh} BPM`,
+      st: status?.heartRate ?? 'safe',
+    },
+    {
+      label: 'Fall / SOS',
+      current: hasFall ? 'Triggered' : 'Normal',
+      statusLabel: hasFall ? 'Danger' : 'Safe',
+      limits: 'Safe: no fall and no SOS  |  Danger: fall detected or SOS pressed',
+      st: hasFall ? 'danger' : 'safe',
+    },
   ];
+
+  const statusText = (value: string) => (value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Safe');
+
   return (
     <View style={th.card}>
       <Text style={th.title}>Threshold Status</Text>
       {rows.map((r, i) => (
         <View key={r.label} style={[th.row, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
-          <Text style={th.label}>{r.label}</Text>
-          <View style={[th.badge, { backgroundColor: STATUS_BG[r.st] }]}>
-            <Text style={[th.badgeText, { color: STATUS_TEXT[r.st] }]}>{r.badge}</Text>
+          <View style={th.rowTop}>
+            <View style={th.rowLabelWrap}>
+              <Text style={th.label}>{r.label}</Text>
+              <Text style={th.current}>{r.current}</Text>
+            </View>
+            <View style={[th.badge, { backgroundColor: STATUS_BG[r.st] }]}>
+              <Text style={[th.badgeText, { color: STATUS_TEXT[r.st] }]}>{statusText(r.statusLabel)}</Text>
+            </View>
           </View>
+          <Text style={th.limitText}>{r.limits}</Text>
         </View>
       ))}
     </View>
@@ -346,14 +410,18 @@ function ThresholdCard({ sensor }) {
 const th = StyleSheet.create({
   card: { backgroundColor: '#fff', borderRadius: 8, padding: 16, marginTop: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
   title: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: '#1A202C', marginBottom: 10 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F0F4F8' },
-  label: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: '#64748B', flex: 1 },
+  row: { paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#F0F4F8', gap: 6 },
+  rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  rowLabelWrap: { flex: 1, gap: 2 },
+  label: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: '#1A202C' },
+  current: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B' },
   badge: { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
   badgeText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
+  limitText: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#64748B', lineHeight: 15 },
 });
 
 // Gas Trend Chart
-function GasTrendCard({ sensor }) {
+function GasTrendCard({ sensor }: { sensor?: SensorData | null }) {
   const [history, setHistory] = useState(Array(20).fill({ ch4: 0, h2s: 0, co: 0 }));
   useEffect(() => {
     if (!sensor) return;
@@ -364,7 +432,7 @@ function GasTrendCard({ sensor }) {
   const chartH = 90;
   const maxVal = 50;
 
-  const polyline = (key, color) => {
+  const polyline = (key: 'ch4' | 'h2s' | 'co', color: string) => {
     const pts = history.map((d, i) => {
       const x = (i / (history.length - 1)) * chartW;
       const y = chartH - (Math.min(d[key] || 0, maxVal) / maxVal) * chartH;
@@ -535,9 +603,9 @@ export default function OverviewScreen() {
   const T = getText(language);
   const now = useRealTimeClock();
   const [showSOS, setShowSOS] = useState(false);
-  const [selectedWorkerId, setSelectedWorkerId] = useState(null);
-  const workerScrollRef = useRef(null);
-  const panResponder = useRef(null);
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const workerScrollRef = useRef<ScrollView | null>(null);
+  const panResponder = useRef<ReturnType<typeof PanResponder.create> | null>(null);
 
   useEffect(() => {
     if (!manager) return;
@@ -555,6 +623,34 @@ export default function OverviewScreen() {
     });
     return () => { unsubWorkers(); unsubAlerts(); };
   }, [manager]);
+
+  const seenAlertIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (alerts.length === 0) return;
+
+    if (seenAlertIds.current.size === 0) {
+      seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+      return;
+    }
+
+    const newestUnresolved = alerts
+      .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
+      .sort((left, right) => {
+        const leftTs = (left.timestamp as any)?.toMillis?.() ?? 0;
+        const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
+        return rightTs - leftTs;
+      })[0];
+
+    if (newestUnresolved) {
+      playAlertSound(newestUnresolved);
+      if (newestUnresolved.type === 'SOS' || newestUnresolved.type === 'FALL') {
+        setShowSOS(true);
+      }
+    }
+
+    seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+  }, [alerts]);
 
   // Setup pan responder for swipe gestures
   useEffect(() => {
@@ -688,7 +784,7 @@ export default function OverviewScreen() {
 
       {/* WORKER SELECTOR - With swipe support */}
       {workers.length > 0 && (
-        <View {...panResponder.current.panHandlers} style={main.workerBar}>
+        <View {...panResponder.current?.panHandlers} style={main.workerBar}>
           <ScrollView
             ref={workerScrollRef}
             horizontal
