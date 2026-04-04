@@ -51,7 +51,7 @@ function useRealTimeClock() {
 }
 
 // SOS Modal
-function SOSModal({ alerts, onDismiss }: { alerts: Alert[]; onDismiss: () => void }) {
+function SOSModal({ alerts, visible, onDismiss }: { alerts: Alert[]; visible: boolean; onDismiss: () => void }) {
   const pulse = useRef(new Animated.Value(1)).current;
   const active = alerts.filter((alert) => (alert.type === 'SOS' || alert.type === 'FALL') && !alert.resolved);
   useEffect(() => {
@@ -63,7 +63,7 @@ function SOSModal({ alerts, onDismiss }: { alerts: Alert[]; onDismiss: () => voi
       ])
     ).start();
   }, [active.length]);
-  if (active.length === 0) return null;
+  if (active.length === 0 || !visible) return null;
   return (
     <Modal visible transparent animationType="fade">
       <View style={ss.overlay}>
@@ -627,9 +627,11 @@ export default function OverviewScreen() {
   const seenAlertIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    console.log('📊 Alerts changed, count:', alerts.length);
     if (alerts.length === 0) return;
 
     if (seenAlertIds.current.size === 0) {
+      console.log('🆕 First load, marking all alerts as seen');
       seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
       return;
     }
@@ -643,10 +645,16 @@ export default function OverviewScreen() {
       })[0];
 
     if (newestUnresolved) {
-      playAlertSound(newestUnresolved);
+      console.log('🔔 NEW ALERT DETECTED:', newestUnresolved.id, newestUnresolved.type);
+      // Play alert sound asynchronously
+      playAlertSound(newestUnresolved).catch((error) => {
+        console.warn('Failed to play alert sound:', error);
+      });
       if (newestUnresolved.type === 'SOS' || newestUnresolved.type === 'FALL') {
         setShowSOS(true);
       }
+    } else {
+      console.log('ℹ️ No new unresolved alerts');
     }
 
     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
@@ -693,7 +701,7 @@ export default function OverviewScreen() {
 
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
-      <SOSModal alerts={alerts} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
+      <SOSModal alerts={alerts} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
 
       {/* TOP BAR - Improved for mobile */}
       <View style={main.topBar}>
@@ -781,6 +789,25 @@ export default function OverviewScreen() {
           </Text>
         </TouchableOpacity>
       )}
+
+      {/* TEST SOUND BUTTON - Temporary for debugging */}
+      <TouchableOpacity 
+        style={{
+          position: 'absolute',
+          top: 100,
+          right: 20,
+          backgroundColor: '#9C27B0',
+          padding: 12,
+          borderRadius: 8,
+          zIndex: 9999,
+        }}
+        onPress={() => {
+          console.log('🧪 TEST BUTTON CLICKED');
+          playAlertSound({ id: 'test-' + Date.now(), type: 'SOS' }).catch(console.error);
+        }}
+      >
+        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>🔊 TEST SOUND</Text>
+      </TouchableOpacity>
 
       {/* WORKER SELECTOR - With swipe support */}
       {workers.length > 0 && (

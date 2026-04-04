@@ -52,7 +52,9 @@ export default function AlertsScreen() {
       })[0];
 
     if (newAlert) {
-      playAlertSound(newAlert);
+      playAlertSound(newAlert).catch((error) => {
+        console.warn('Failed to play alert sound:', error);
+      });
     }
 
     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
