@@ -9,7 +9,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
-import { SOLAPUR_ZONES, getSafetyStatus } from '@/services/sensorService';
+import { SOLAPUR_ZONES, SOLAPUR_MANHOLES, getSafetyStatus } from '@/services/sensorService';
 
 const SOLAPUR_LAT = 17.6869;
 const SOLAPUR_LNG = 75.9064;
@@ -143,6 +143,57 @@ function analyseWeatherSafety(w: WeatherData): SafetyAnalysis {
 }
 
 function buildLeafletHTML(selectedZone: string | null): string {
+  const allManholes = SOLAPUR_MANHOLES.map((m) => ({
+    id: m.id,
+    lat: m.lat,
+    lng: m.lng,
+    zone: m.zone,
+    label: m.label,
+  }));
+
+  const zonesWithCoords = SOLAPUR_ZONES.map((zone) => {
+    const points = allManholes.filter((m) => m.zone === zone.id);
+
+    if (points.length === 0) {
+      return {
+        id: zone.id,
+        name: zone.name,
+        nameM: zone.nameMarathi,
+        color: zone.color,
+        wards: zone.wards.join(', '),
+        coords: [
+          [SOLAPUR_LAT + 0.01, SOLAPUR_LNG - 0.01],
+          [SOLAPUR_LAT + 0.01, SOLAPUR_LNG + 0.01],
+          [SOLAPUR_LAT - 0.01, SOLAPUR_LNG + 0.01],
+          [SOLAPUR_LAT - 0.01, SOLAPUR_LNG - 0.01],
+        ],
+      };
+    }
+
+    const lats = points.map((p) => p.lat);
+    const lngs = points.map((p) => p.lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const latPad = Math.max((maxLat - minLat) * 0.35, 0.0025);
+    const lngPad = Math.max((maxLng - minLng) * 0.35, 0.0025);
+
+    return {
+      id: zone.id,
+      name: zone.name,
+      nameM: zone.nameMarathi,
+      color: zone.color,
+      wards: zone.wards.join(', '),
+      coords: [
+        [maxLat + latPad, minLng - lngPad],
+        [maxLat + latPad, maxLng + lngPad],
+        [minLat - latPad, maxLng + lngPad],
+        [minLat - latPad, minLng - lngPad],
+      ],
+    };
+  });
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -167,35 +218,13 @@ html,body{width:100%;height:100%;background:#F0F4F8}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
 <script>
 var SEL=${JSON.stringify(selectedZone)};
-var ZONES=[
-  {id:'north',name:'North Zone',nameM:'उत्तर विभाग',color:'#3498DB',
-   coords:[[17.730,75.870],[17.730,75.950],[17.700,75.960],[17.695,75.920],[17.700,75.880]],
-   wards:'Ward 1, 2, 3, Hotgi Road'},
-  {id:'south',name:'South Zone',nameM:'दक्षिण विभाग',color:'#2ECC71',
-   coords:[[17.660,75.870],[17.660,75.960],[17.640,75.960],[17.635,75.920],[17.640,75.870]],
-   wards:'Ward 4, 5, Akkalkot Road, Vijapur Road'},
-  {id:'east',name:'East Zone',nameM:'पूर्व विभाग',color:'#E67E22',
-   coords:[[17.700,75.950],[17.700,75.960],[17.660,75.960],[17.660,75.940],[17.680,75.942]],
-   wards:'Ward 6, 7, Hutatma Chowk, Osmanabad Naka'},
-  {id:'west',name:'West Zone',nameM:'पश्चिम विभाग',color:'#9B59B6',
-   coords:[[17.700,75.870],[17.700,75.890],[17.660,75.890],[17.660,75.870]],
-   wards:'Ward 8, 9, Pandharpur Road, Bijapur Road'},
-  {id:'central',name:'Central Zone',nameM:'मध्य विभाग',color:'#E74C3C',
-   coords:[[17.700,75.890],[17.700,75.950],[17.680,75.942],[17.660,75.940],[17.660,75.890]],
-   wards:'Ward 10, 11, Mangalwar Peth, Budhwar Peth'},
-];
-var MANHOLES=[
-  {id:'MH-01',lat:17.721,lng:75.892,zone:'north',label:'Hotgi Road Junction'},
-  {id:'MH-02',lat:17.712,lng:75.910,zone:'north',label:'Ward 2 Main Line'},
-  {id:'MH-03',lat:17.648,lng:75.888,zone:'south',label:'Akkalkot Road Entry'},
-  {id:'MH-04',lat:17.643,lng:75.928,zone:'south',label:'Vijapur Road Crossing'},
-  {id:'MH-05',lat:17.682,lng:75.952,zone:'east',label:'Hutatma Chowk'},
-  {id:'MH-06',lat:17.672,lng:75.957,zone:'east',label:'Osmanabad Naka'},
-  {id:'MH-07',lat:17.678,lng:75.878,zone:'west',label:'Pandharpur Road Main'},
-  {id:'MH-08',lat:17.665,lng:75.882,zone:'west',label:'Bijapur Road Junction'},
-  {id:'MH-09',lat:17.690,lng:75.910,zone:'central',label:'Mangalwar Peth Centre'},
-  {id:'MH-10',lat:17.682,lng:75.925,zone:'central',label:'Budhwar Peth Main'},
-];
+var ZONES=${JSON.stringify(zonesWithCoords)};
+var bounds = [];
+
+ZONES.forEach(function(z) {
+  bounds = bounds.concat(z.coords);
+});
+var MANHOLES=${JSON.stringify(allManholes)};
 function msg(data){
   if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(data));
   else window.parent.postMessage(JSON.stringify(data),'*');
@@ -203,6 +232,14 @@ function msg(data){
 var map=L.map('map',{zoomControl:true,attributionControl:false}).setView([17.686,75.912],13);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 L.control.attribution({prefix:'OSM'}).addTo(map);
+
+MANHOLES.forEach(function(m) {
+  bounds.push([m.lat, m.lng]);
+});
+if (bounds.length > 0) {
+  map.fitBounds(bounds, { padding: [20, 20] });
+}
+
 ZONES.forEach(function(z){
   var isSel=SEL===z.id;
   var opacity=SEL===null?0.4:(isSel?0.65:0.12);

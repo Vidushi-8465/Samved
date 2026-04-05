@@ -51,9 +51,24 @@ function useRealTimeClock() {
 }
 
 // SOS Modal
-function SOSModal({ alerts, visible, onDismiss }: { alerts: Alert[]; visible: boolean; onDismiss: () => void }) {
+function SOSModal({ alerts, sensorEmergencies, visible, onDismiss }: {
+  alerts: Alert[];
+  sensorEmergencies: Array<{ id: string; workerName: string; type: 'SOS' | 'FALL'; zone: string; manholeId: string }>;
+  visible: boolean;
+  onDismiss: () => void;
+}) {
   const pulse = useRef(new Animated.Value(1)).current;
-  const active = alerts.filter((alert) => (alert.type === 'SOS' || alert.type === 'FALL') && !alert.resolved);
+  const firestoreActive = alerts.filter((alert) => (alert.type === 'SOS' || alert.type === 'FALL') && !alert.resolved);
+  const active = [
+    ...firestoreActive.map((alert) => ({
+      id: alert.id,
+      workerName: alert.workerName,
+      type: alert.type,
+      zone: alert.zone,
+      manholeId: alert.manholeId,
+    })),
+    ...sensorEmergencies,
+  ];
   useEffect(() => {
     if (active.length === 0) return;
     Animated.loop(
@@ -131,11 +146,25 @@ const ec = StyleSheet.create({
 });
 
 // Worker Condition Card
-function WorkerConditionCard({ sensor, workerEmployeeId }: { sensor?: SensorData | null; workerEmployeeId: string }) {
+function WorkerConditionCard({
+  sensor,
+  workerEmployeeId,
+  timer,
+  onToggleTimer,
+  formatElapsed,
+}: {
+  sensor?: SensorData | null;
+  workerEmployeeId: string;
+  timer?: { timeIn: Date; elapsed: number; running: boolean };
+  onToggleTimer: () => void;
+  formatElapsed: (seconds: number) => string;
+}) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const isActive = !!sensor;
   const isFall = sensor?.fallDetected;
   const isSOS = sensor?.sosTriggered;
+  const posture = (sensor?.workerPosture ?? '').toLowerCase();
+  const isInside = !!timer?.running;
   return (
     <View style={wc.card}>
       <View style={wc.header}>
@@ -154,9 +183,10 @@ function WorkerConditionCard({ sensor, workerEmployeeId }: { sensor?: SensorData
       <View style={wc.row}>
         <Text style={wc.rowLabel}>Motion</Text>
         <Text style={[wc.rowVal, { color: '#1A3C6E', fontFamily: 'Poppins_600SemiBold' }]}>
-          {sensor?.workerPosture === 'standing' ? 'Movement Detected'
-            : sensor?.workerPosture === 'stationary' ? 'Stationary'
-            : sensor?.workerPosture === 'fallen' ? 'FALLEN'
+          {posture === 'standing' ? 'Movement Detected'
+            : posture === 'stationary' ? 'Stationary'
+            : posture === 'tilt' || posture === 'tilted' ? 'Tilt Detected'
+            : posture === 'fallen' || posture === 'fall' ? 'FALLEN'
             : '—'}
         </Text>
       </View>
@@ -201,6 +231,23 @@ function WorkerConditionCard({ sensor, workerEmployeeId }: { sensor?: SensorData
           </Text>
         </View>
       </View>
+
+      <View style={wc.timerSection}>
+        <View style={wc.timerMeta}>
+          <Text style={wc.timerLabel}>Work Session</Text>
+          <Text style={[wc.timerValue, { color: isInside ? '#E67E22' : '#64748B' }]}>
+            {timer ? formatElapsed(timer.elapsed) : '00:00'}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[wc.timerBtn, isInside ? wc.timerBtnOut : wc.timerBtnIn]}
+          onPress={onToggleTimer}
+          activeOpacity={0.85}
+        >
+          <MaterialCommunityIcons name={isInside ? 'logout' : 'login'} size={14} color="#fff" />
+          <Text style={wc.timerBtnText}>{isInside ? 'TIME OUT' : 'TIME IN'}</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -223,6 +270,32 @@ const wc = StyleSheet.create({
   sysBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 8, padding: 12, marginTop: 6 },
   sysTitle: { fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   sysSub: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  timerSection: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  timerMeta: { flex: 1 },
+  timerLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B', letterSpacing: 0.4 },
+  timerValue: { fontSize: 20, fontFamily: 'Poppins_700Bold', marginTop: 2 },
+  timerBtn: {
+    minWidth: 120,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  timerBtnIn: { backgroundColor: '#1A3C6E' },
+  timerBtnOut: { backgroundColor: '#E74C3C' },
+  timerBtnText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: '#fff' },
 });
 
 // System Status Card
@@ -625,6 +698,7 @@ export default function OverviewScreen() {
   }, [manager]);
 
   const seenAlertIds = useRef<Set<string>>(new Set());
+  const seenSensorEmergencyIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     console.log('📊 Alerts changed, count:', alerts.length);
@@ -660,6 +734,75 @@ export default function OverviewScreen() {
     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
   }, [alerts]);
 
+  useEffect(() => {
+    const currentEmergencyIds = new Set<string>();
+
+    Object.entries(sensors).forEach(([workerId, sensor]) => {
+      const posture = (sensor.workerPosture ?? '').toLowerCase();
+      const isFall = sensor.fallDetected || sensor.motionAlert === 1 || posture === 'fallen' || posture === 'fall';
+      const isEmergency = isFall || sensor.sosTriggered;
+
+      if (!isEmergency) return;
+
+      const emergencyType = isFall ? 'FALL' : 'SOS';
+      const emergencyId = `${workerId}:${emergencyType}`;
+      currentEmergencyIds.add(emergencyId);
+
+      if (!seenSensorEmergencyIds.current.has(emergencyId)) {
+        setShowSOS(true);
+        playAlertSound({
+          id: `sensor-${emergencyId}-${sensor.lastUpdated || Date.now()}`,
+          type: emergencyType,
+        }).catch((error) => {
+          console.warn('Failed to play sensor emergency sound:', error);
+        });
+      }
+    });
+
+    seenSensorEmergencyIds.current = currentEmergencyIds;
+  }, [sensors]);
+
+    // ── TIME IN / TIME OUT TRACKER ────────────────────────────
+    const [workerTimers, setWorkerTimers] = useState<Record<string, { timeIn: Date; elapsed: number; running: boolean }>>({});
+    const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  
+    useEffect(() => {
+      timerIntervalRef.current = setInterval(() => {
+        setWorkerTimers(prev => {
+          let changed = false;
+          const updated: typeof prev = {};
+          Object.keys(prev).forEach(id => {
+            if (prev[id].running) {
+              updated[id] = { ...prev[id], elapsed: prev[id].elapsed + 1 };
+              changed = true;
+            } else {
+              updated[id] = prev[id];
+            }
+          });
+          return changed ? updated : prev;
+        });
+      }, 1000);
+      return () => { if (timerIntervalRef.current) clearInterval(timerIntervalRef.current); };
+    }, []);
+  
+    const handleTimeIn = (workerId: string) => {
+      setWorkerTimers(prev => ({ ...prev, [workerId]: { timeIn: new Date(), elapsed: 0, running: true } }));
+    };
+  
+    const handleTimeOut = (workerId: string) => {
+      setWorkerTimers(prev => prev[workerId] ? { ...prev, [workerId]: { ...prev[workerId], running: false } } : prev);
+    };
+  
+    const formatElapsed = (seconds: number): string => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    };
+    // ──────────────────────────────────────────────────────────
+  
+
   // Setup pan responder for swipe gestures
   useEffect(() => {
     panResponder.current = PanResponder.create({
@@ -684,6 +827,22 @@ export default function OverviewScreen() {
   const activeSensor = selectedWorkerId ? sensors[selectedWorkerId] : Object.values(sensors)[0];
   const selectedWorker = workers.find(w => w.id === selectedWorkerId) || workers[0];
   const unresolvedCount = alerts.filter(a => !a.resolved).length;
+  const sensorEmergencies = Object.entries(sensors)
+    .map(([workerId, sensor]) => {
+      const posture = (sensor.workerPosture ?? '').toLowerCase();
+      const isFall = sensor.fallDetected || sensor.motionAlert === 1 || posture === 'fallen' || posture === 'fall';
+      const isEmergency = isFall || sensor.sosTriggered;
+      if (!isEmergency) return null;
+      const worker = workers.find((w) => w.id === workerId);
+      return {
+        id: `sensor-${workerId}-${isFall ? 'FALL' : 'SOS'}`,
+        workerName: worker?.name ?? workerId,
+        type: isFall ? 'FALL' as const : 'SOS' as const,
+        zone: sensor.zone ?? '—',
+        manholeId: sensor.manholeId ?? '—',
+      };
+    })
+    .filter((item): item is { id: string; workerName: string; type: 'SOS' | 'FALL'; zone: string; manholeId: string } => !!item);
 
   const dateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const timeStr = now.toTimeString().slice(0, 8);
@@ -701,7 +860,7 @@ export default function OverviewScreen() {
 
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
-      <SOSModal alerts={alerts} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
+      <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
 
       {/* TOP BAR - Improved for mobile */}
       <View style={main.topBar}>
@@ -789,7 +948,6 @@ export default function OverviewScreen() {
           </Text>
         </TouchableOpacity>
       )}
-
       {/* TEST SOUND BUTTON - Temporary for debugging */}
       <TouchableOpacity 
         style={{
@@ -860,7 +1018,21 @@ export default function OverviewScreen() {
               <GasTrendCard sensor={activeSensor} />
             </View>
             <View style={main.col2}>
-              <WorkerConditionCard sensor={activeSensor} workerEmployeeId={selectedWorker?.employeeId ?? 'WRK-001'} />
+              <WorkerConditionCard
+                sensor={activeSensor}
+                workerEmployeeId={selectedWorker?.employeeId ?? 'WRK-001'}
+                timer={selectedWorkerId ? workerTimers[selectedWorkerId] : undefined}
+                onToggleTimer={() => {
+                  if (!selectedWorkerId) return;
+                  const timer = workerTimers[selectedWorkerId];
+                  if (timer?.running) {
+                    handleTimeOut(selectedWorkerId);
+                  } else {
+                    handleTimeIn(selectedWorkerId);
+                  }
+                }}
+                formatElapsed={formatElapsed}
+              />
               <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
             </View>
             <View style={main.col3}>
@@ -870,7 +1042,21 @@ export default function OverviewScreen() {
           </View>
         ) : (
           <View style={{ gap: 10 }}>
-            <WorkerConditionCard sensor={activeSensor} workerEmployeeId={selectedWorker?.employeeId ?? 'WRK-001'} />
+            <WorkerConditionCard
+              sensor={activeSensor}
+              workerEmployeeId={selectedWorker?.employeeId ?? 'WRK-001'}
+              timer={selectedWorkerId ? workerTimers[selectedWorkerId] : undefined}
+              onToggleTimer={() => {
+                if (!selectedWorkerId) return;
+                const timer = workerTimers[selectedWorkerId];
+                if (timer?.running) {
+                  handleTimeOut(selectedWorkerId);
+                } else {
+                  handleTimeIn(selectedWorkerId);
+                }
+              }}
+              formatElapsed={formatElapsed}
+            />
             <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
             <AlertsLogCard alerts={alerts} />

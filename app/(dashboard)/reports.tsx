@@ -289,62 +289,122 @@ function GaugeChart({ value, max, color, label, unit }: { value: number | null; 
   );
 }
 
-// ─── AI Analysis ──────────────────────────────────────────────────────────────
+
+// ─── AI Analysis ─────────────────────────────────────────────────────────────
+// run node server.js in backend/ to start AI server before using this feature
+const AI_ANALYSIS_URL =
+  process.env.EXPO_PUBLIC_AI_ANALYSIS_URL?.trim() ||
+  (Platform.OS === 'android'
+    ? 'http://10.0.2.2:5000/ai-analysis'
+    : 'http://localhost:5000/ai-analysis');
 
 async function fetchAiAnalysis(prompt: string): Promise<string> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
-      system: `You are a safety analyst for Solapur Municipal Corporation's sewer maintenance operations.
-You analyze real-time sensor data from underground sewer workers and provide concise, actionable safety insights.
-Format your response using plain text with clear section headings (no markdown symbols like ** or ##).
-Be direct, professional, and prioritise worker safety. Flag dangerous gas or vital values explicitly.`,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  const data = await res.json();
-  const text = (data.content ?? []).map((b: any) => b.text ?? '').join('');
-  if (!text) throw new Error('Empty AI response');
-  return text;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const res = await fetch(AI_ANALYSIS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prompt }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`AI server error (${res.status})`);
+    }
+
+    const data = await res.json();
+    const text = typeof data?.result === 'string' ? data.result.trim() : '';
+
+    if (!text) {
+      throw new Error('AI server returned an empty response');
+    }
+
+    return text;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error('AI request timed out. Please try again.');
+    }
+    if (error instanceof TypeError) {
+      throw new Error(`Cannot reach AI server at ${AI_ANALYSIS_URL}. Check backend URL/network.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildAnalysisPrompt(p: {
-  period: Period; totalAlerts: number; resolvedAlerts: number; resolutionRate: number;
+  period: string;
+  totalAlerts: number;
+  resolvedAlerts: number;
+  resolutionRate: number;
   alertsByType: { label: string; count: number }[];
-  premonitoringStats: { avgHeartRate: number | null; avgSpo2: number | null; avgTemperature: number | null; readingsCount: number };
-  overallGas: { avgCh4: number | null; avgH2s: number | null; avgCo: number | null; avgO2: number | null; avgNh3: number | null };
-  gasStats: { zone: string; sewerLine: string; avgCh4: number | null; avgH2s: number | null; avgCo: number | null; avgO2: number | null; avgNh3: number | null; readingsCount: number }[];
+  premonitoringStats: {
+    avgHeartRate: number | null;
+    avgSpo2: number | null;
+    avgTemperature: number | null;
+    readingsCount: number;
+  };
+  overallGas: {
+    avgCh4: number | null;
+    avgH2s: number | null;
+    avgCo: number | null;
+    avgO2: number | null;
+    avgNh3: number | null;
+  };
+  gasStats: {
+    zone: string;
+    sewerLine: string;
+    avgCh4: number | null;
+    avgH2s: number | null;
+    avgCo: number | null;
+    avgO2: number | null;
+    avgNh3: number | null;
+    readingsCount: number;
+  }[];
   workersCount: number;
 }): string {
   const g = p.overallGas;
   const pm = p.premonitoringStats;
-  return `Analyze this sewer safety report — period: ${p.period.toUpperCase()}
+
+  return `
+You are a safety analyst for sewer workers. Provide concise, actionable insights.
+
+Analyze this sewer safety report — period: ${p.period.toUpperCase()}
 
 WORKFORCE: ${p.workersCount} workers
 
-ALERTS: Total=${p.totalAlerts} Resolved=${p.resolvedAlerts} Resolution=${p.resolutionRate}%
-Breakdown: ${p.alertsByType.map((a) => `${a.label}:${a.count}`).join(', ')}
+ALERTS:
+Total=${p.totalAlerts}
+Resolved=${p.resolvedAlerts}
+Resolution=${p.resolutionRate}%
+Breakdown: ${p.alertsByType.map(a => `${a.label}:${a.count}`).join(", ")}
 
 VITALS (${pm.readingsCount} readings):
-Heart Rate: ${pm.avgHeartRate ?? 'N/A'} bpm (safe 60-100)
-SpO2: ${pm.avgSpo2 ?? 'N/A'}% (safe >95%)
-Temperature: ${pm.avgTemperature ?? 'N/A'}°C (safe 36-37.5)
+Heart Rate: ${pm.avgHeartRate ?? "N/A"} bpm (safe 60-100)
+SpO2: ${pm.avgSpo2 ?? "N/A"}% (safe >95%)
+Temperature: ${pm.avgTemperature ?? "N/A"}°C (safe 36-37.5)
 
-GAS CONCENTRATIONS (overall):
-CH4: ${g.avgCh4 ?? 'N/A'} ppm (danger >5000)
-H2S: ${g.avgH2s ?? 'N/A'} ppm (danger >1 TWA, IDLH 50)
-CO: ${g.avgCo ?? 'N/A'} ppm (danger >25 TWA)
-O2: ${g.avgO2 ?? 'N/A'}% (safe 19.5-23.5%, danger <16% or >23.5%)
-NH3: ${g.avgNh3 ?? 'N/A'} ppm (danger >25 TWA)
+GAS CONCENTRATIONS:
+CH4: ${g.avgCh4 ?? "N/A"} ppm (>200 danger)
+H2S: ${g.avgH2s ?? "N/A"} ppm (>1 TWA, 50 IDLH)
+CO: ${g.avgCo ?? "N/A"} ppm (>25 TWA)
+O2: ${g.avgO2 ?? "N/A"}% (safe 19.5–23.5)
+NH3: ${g.avgNh3 ?? "N/A"} ppm (>25 TWA)
 
 BY ZONE:
-${p.gasStats.map((z) => `${z.zone}/${z.sewerLine}: CH4=${z.avgCh4 ?? 'N/A'} H2S=${z.avgH2s ?? 'N/A'} CO=${z.avgCo ?? 'N/A'} O2=${z.avgO2 ?? 'N/A'}% NH3=${z.avgNh3 ?? 'N/A'} (${z.readingsCount} readings)`).join('\n')}
+${p.gasStats
+  .map(
+    z =>
+      `${z.zone}/${z.sewerLine}: CH4=${z.avgCh4 ?? "N/A"}, H2S=${z.avgH2s ?? "N/A"}, CO=${z.avgCo ?? "N/A"}, O2=${z.avgO2 ?? "N/A"}%, NH3=${z.avgNh3 ?? "N/A"} (${z.readingsCount})`
+  )
+  .join("\n")}
 
-Provide these sections (plain text, no markdown):
+Provide sections:
 OVERALL SAFETY ASSESSMENT
 CRITICAL RISKS
 WORKER HEALTH OBSERVATIONS
@@ -352,7 +412,8 @@ ZONE CONCERNS
 RECOMMENDED ACTIONS (top 3)
 TREND OUTLOOK
 
-Under 350 words. Be specific with numbers.`;
+Keep under 300 words. Be specific with numbers.
+`;
 }
 
 // ─── Report builders ──────────────────────────────────────────────────────────
