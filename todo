@@ -1,5 +1,4 @@
 Helpline number 0217-2735293, 0217-2740335, 14420 - (DONE)
-smc logo 
 Zones : Solapur map api - (HALF DONE)
 MPU - tilt ka msg on overview page  ( )
 Integrate sms using twilio 
@@ -12,3 +11,77 @@ Weather conditions like flood or anything in the zones area. (API)
 Nearest monitoring location will get the alert for nearest sewer zone ka danger ya fall 
 csv download (DONE) 
 Gas based prediction 
+Worker time in and out (DONE)
+
+
+API error in ai analysis in reports section 
+no graph generated and shown on dashboard 
+
+
+I’ll verify how those three report sections are populated by tracing app/(dashboard)/reports.tsx/reports.tsx) and the related data services, then confirm whether the data path actually comes from Firebase.I’m gathering the relevant code paths now: the report screen plus sensor/data services and Firebase config, so I can map each section to its actual source.
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/reports.tsx#1-1), lines 1 to 320
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/services/sensorService.ts#1-1), lines 1 to 320
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/services/sensorService2.ts)
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/services/firebase.ts)
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/store/useStore.ts)
+
+I found Firebase wiring in services, and next I’m pinpointing the exact data source for those three report cards in app/(dashboard)/reports.tsx/reports.tsx) so I can confirm if each one is truly Firebase-backed or derived from local state.
+
+Searched for regex `Pre-monitoring Vitals|Overall Gas Concentration|Gas Concentration Trend|premonitoring|gas trend|overall gas` (`**/app/(dashboard)/reports.tsx`), 20 results
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/reports.tsx#320-320), lines 320 to 760
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/reports.tsx#760-760), lines 760 to 1030
+
+I confirmed the UI sections and their computed variables; now I’m tracing where premonitoringReadings/reports.tsx#L515) and gasReadings/reports.tsx#L515) are filled to determine if they come from Firebase subscriptions or not.
+
+Searched for regex `premonitoringReadings|gasReadings|setPremonitoring|setGas|pre_monitor|gas_readings|continuous monitoring` (`**/*.{ts,tsx}`), 20 results
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/store/useStore.ts)
+
+Searched for files matching `**/useStore.ts`, 1 match
+
+I found a key mismatch: the store currently doesn’t define premonitoringReadings or gasReadings, so I’m checking the dashboard subscription code next to verify whether those datasets are ever fetched from Firebase at all.
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/overview.tsx#520-520), lines 520 to 760
+
+Searched for regex `setWorkers|setAlerts|setSensors|listenToAllSensors|listenToWorkers|listenToAlerts|pre_monitor|gasReadings|premonitoringReadings` (`**/app/**/*.tsx`), 20 results
+
+Read [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/index.tsx)
+
+Checked [](file:///d%3A/coding/Samved/SMC-LiveMonitor/app/%28dashboard%29/reports.tsx), [](file:///d%3A/coding/Samved/SMC-LiveMonitor/store/useStore.ts), 2 problems found
+
+Searched for regex `premonitoringReadings|gasReadings`, 18 results
+
+Checked. For those three sections on the Reports screen, they are not currently connected end-to-end to Firebase data.
+
+What I found:
+
+1. Reports screen expects two store fields:
+- app/(dashboard)/reports.tsx#L515/reports.tsx#L515) reads premonitoringReadings and gasReadings from Zustand.
+
+2. Those fields do not exist in the store:
+- useStore.ts defines workers, sensors, alerts, etc., but no premonitoringReadings or gasReadings state/setters/listeners.
+
+3. There is no code in the workspace populating those two report arrays:
+- Search only finds usage inside app/(dashboard)/reports.tsx/reports.tsx), not any Firebase subscription writing to them.
+
+4. TypeScript already flags this:
+- app/(dashboard)/reports.tsx#L515/reports.tsx#L515) has compile errors: Property premonitoringReadings does not exist on AppState, and Property gasReadings does not exist on AppState.
+
+5. Firebase itself is configured and used elsewhere:
+- Firebase config exists in firebase.ts.
+- Live listeners for workers/alerts/sensors are wired in app/(dashboard)/overview.tsx#L685/overview.tsx#L685) through sensorService.ts.
+- A direct pre-monitor path is used in overview card at app/(dashboard)/overview.tsx#L579/overview.tsx#L579), but that is not feeding Reports.
+
+So for your exact question:
+- Pre-monitoring Vitals in Reports: No, not connected right now.
+- Overall Gas Concentration in Reports: No, not connected right now.
+- Gas Concentration Trend in Reports: No, not connected right now.
+
+If you want, I can wire these three sections to Firebase properly by adding store state + listeners and mapping RTDB/Firestore data into the exact report structures.
