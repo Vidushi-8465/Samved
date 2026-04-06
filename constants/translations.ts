@@ -49,6 +49,7 @@ export const t = {
       alerts: 'Alerts',
       zones: 'Zones',
       reports: 'Reports',
+      samved: 'SAMVED',
       greeting: {
         morning: 'Good Morning',
         afternoon: 'Good Afternoon',
@@ -143,6 +144,7 @@ export const t = {
       alerts: 'अलर्ट',
       zones: 'क्षेत्र',
       reports: 'अहवाल',
+      samved: 'सॅमवेद',
       greeting: {
         morning: 'शुभ सकाळ',
         afternoon: 'शुभ दुपार',

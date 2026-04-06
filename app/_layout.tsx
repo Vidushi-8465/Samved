@@ -14,6 +14,11 @@ import {
 import { View, Text, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as Notifications from 'expo-notifications';
+
+useEffect(() => {
+  Notifications.requestPermissionsAsync();
+}, []);
 
 // Only prevent auto-hide on native — not on web
 if (Platform.OS !== 'web') {

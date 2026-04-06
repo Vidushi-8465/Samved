@@ -1,0 +1,29 @@
+SAMVED – ML Training Report
+=======================================================
+Test Accuracy  : 100.00%
+CV Mean        : 100.00% ± 0.00%
+
+Feature Importance:
+  h2s_delta             0.1973
+  o2_delta              0.1882
+  o2_percent            0.1510
+  hr_delta              0.1068
+  spo2_percent          0.0868
+  h2s_ppm               0.0863
+  co_ppm                0.0696
+  ch4_delta             0.0641
+  ch4_ppm               0.0233
+  heart_rate_bpm        0.0137
+  spo2_delta            0.0069
+  motion_state          0.0061
+
+Classification Report:
+              precision    recall  f1-score   support
+
+        SAFE       1.00      1.00      1.00       200
+     WARNING       1.00      1.00      1.00       200
+      DANGER       1.00      1.00      1.00       200
+
+    accuracy                           1.00       600
+   macro avg       1.00      1.00      1.00       600
+weighted avg       1.00      1.00      1.00       600

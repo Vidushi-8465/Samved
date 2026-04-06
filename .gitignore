@@ -22,6 +22,7 @@ GoogleService-Info.plist
 .env.development
 .env.production
 *.env
+.venv
 
 # Build outputs
 android/

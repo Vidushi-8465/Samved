@@ -16,7 +16,14 @@ import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import { restoreSession } from '@/services/authService';
 
-const TAB_ROUTES = ['overview', 'workers', 'alerts', 'zones', 'reports'];
+const TAB_ROUTES = [
+  { key: 'overview', path: '/(dashboard)/overview' },
+  { key: 'workers', path: '/(dashboard)/workers' },
+  { key: 'alerts', path: '/(dashboard)/alerts' },
+  { key: 'zones', path: '/(dashboard)/zones' },
+  { key: 'reports', path: '/(dashboard)/reports' },
+  { key: 'samved', path: '/(dashboard)/samved' },
+] as const;
 
 const { width } = Dimensions.get('window');
 const TAB_WIDTH = width / TAB_ROUTES.length;
@@ -41,7 +48,7 @@ export default function DashboardLayout() {
   const indicatorX = useRef(new Animated.Value(0)).current;
 
   const currentRoute = pathname.split('/').pop() || 'overview';
-  const currentIdx = TAB_ROUTES.indexOf(currentRoute);
+  const currentIdx = TAB_ROUTES.findIndex((route) => route.key === currentRoute);
 
   // Animate indicator on tab change
   useEffect(() => {
@@ -84,9 +91,9 @@ export default function DashboardLayout() {
         if (currentIdx === -1) return;
 
         if (gestureState.dx > threshold && currentIdx > 0) {
-          router.replace(`/(dashboard)/${TAB_ROUTES[currentIdx - 1]}`);
+          router.replace(TAB_ROUTES[currentIdx - 1].path);
         } else if (gestureState.dx < -threshold && currentIdx < TAB_ROUTES.length - 1) {
-          router.replace(`/(dashboard)/${TAB_ROUTES[currentIdx + 1]}`);
+          router.replace(TAB_ROUTES[currentIdx + 1].path);
         }
       },
     })
@@ -162,8 +169,18 @@ export default function DashboardLayout() {
             }}
           />
           <Tabs.Screen
+            name="samved"
+            options={{
+              title: T.dashboard.samved,
+              tabBarIcon: ({ focused, color }) => (
+                <TabIcon name="brain" focused={focused} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
             name="test"
             options={{
+              href: null,
               title: 'Test',
               tabBarIcon: ({ focused, color }) => (
                 <TabIcon name="test-tube" focused={focused} color={color} />
