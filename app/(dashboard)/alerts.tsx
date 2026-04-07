@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Animated, Dimensions, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Timestamp } from 'firebase/firestore';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
@@ -130,7 +131,11 @@ export default function AlertsScreen() {
           text: 'Resolve',
           style: 'destructive',
           onPress: async () => {
-            await doResolve(alert);
+            try {
+              await resolveAlert(alert.id, manager?.name || 'Manager');
+            } catch (e) {
+              Alert.alert('Error', 'Could not resolve alert. Check connection.');
+            }
           },
         },
       ]

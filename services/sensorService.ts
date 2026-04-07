@@ -305,12 +305,15 @@ export const listenToAlerts = (
           return bTs - aTs;
         })
         .slice(0, 50);
-      console.log('Alerts from Firestore:', alerts.length);
+      console.log('📡 Alerts from Firestore:', alerts.length);
+      console.log('Resolved count:', alerts.filter(a => a.resolved).length);
+      console.log('Unresolved count:', alerts.filter(a => !a.resolved).length);
       callback(alerts);
     },
     (error) => {
-      // Swallow errors to avoid crashes on mobile; can be inspected in debug logs.
-      console.warn('listenToAlerts error', error);
+      console.error('❌ listenToAlerts ERROR:', error);
+      console.error('Error code:', error?.code);
+      console.error('Error message:', error?.message);
     }
   );
 };
