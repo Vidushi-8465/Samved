@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Timestamp } from 'firebase/firestore';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
@@ -82,9 +83,33 @@ export default function AlertsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              console.log('🔧 Resolving alert:', alert.id);
+              console.log('Manager:', manager);
+
+              // Update Firebase FIRST
               await resolveAlert(alert.id, manager?.name || 'Manager');
-            } catch (e) {
-              Alert.alert('Error', 'Could not resolve alert. Check connection.');
+              console.log('✅ Firebase updated successfully');
+
+              // Optimistically update local state after confirming Firebase update
+              const updatedAlerts = alerts.map(a =>
+                a.id === alert.id
+                  ? {
+                      ...a,
+                      resolved: true,
+                      resolvedBy: manager?.name || 'Manager',
+                      resolvedAt: Timestamp.now(),
+                    }
+                  : a
+              );
+              setAlerts(updatedAlerts);
+              console.log('✅ Local state updated');
+
+              Alert.alert('Success', 'Alert marked as resolved ✓');
+            } catch (e: any) {
+              console.error('❌ Resolve error:', e);
+              console.error('Error message:', e?.message);
+              console.error('Error code:', e?.code);
+              Alert.alert('Error', `Could not resolve alert: ${e?.message || 'Unknown error'}`);
             }
           },
         },
