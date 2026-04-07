@@ -16,10 +16,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 
-useEffect(() => {
-  Notifications.requestPermissionsAsync();
-}, []);
-
 // Only prevent auto-hide on native — not on web
 if (Platform.OS !== 'web') {
   SplashScreen.preventAutoHideAsync();
@@ -32,6 +28,10 @@ export default function RootLayout() {
     Poppins_600SemiBold,
     Poppins_700Bold,
   });
+
+  useEffect(() => {
+    Notifications.requestPermissionsAsync();
+  }, []);
 
   useEffect(() => {
     if (fontsLoaded || fontError) {

@@ -1,13 +1,16 @@
 import { create } from 'zustand';
 import { ref, onValue } from 'firebase/database';
+import { Timestamp } from 'firebase/firestore';
 import { rtdb } from '@/services/firebase';
 import { ManagerProfile } from '@/services/authService';
 import { SensorData, WorkerProfile, Alert } from '@/services/sensorService';
 import * as Notifications from 'expo-notifications';
-import { AppState } from 'react-native';
+import { AppState as RNAppState } from 'react-native';
 import { playAlertSound } from '@/utils/alertSound';
+import { isCriticalAlert, sendCriticalAlertEscalation } from '@/services/emergencyService';
 
 let seenAlertIds = new Set<string>();
+let escalatedAlertIds = new Set<string>();
 
 async function triggerNotification(alert: Alert) {
   await Notifications.scheduleNotificationAsync({
@@ -21,7 +24,7 @@ async function triggerNotification(alert: Alert) {
   });
 }
 
-function handleNewAlerts(alerts: Alert[]) {
+function handleNewAlerts(alerts: Alert[], manager: ManagerProfile | null, workers: WorkerProfile[]) {
   if (alerts.length === 0) return;
 
   // First load: just mark all as seen
@@ -30,12 +33,11 @@ function handleNewAlerts(alerts: Alert[]) {
     return;
   }
 
-  const newAlert = alerts.find(
-    (a) => !a.resolved && !seenAlertIds.has(a.id)
-  );
+  const newAlerts = alerts.filter((a) => !a.resolved && !seenAlertIds.has(a.id));
+  const newAlert = newAlerts[0];
 
   if (newAlert) {
-    if (AppState.currentState === 'active') {
+    if (RNAppState.currentState === 'active') {
       // App open → play sound
       playAlertSound(newAlert).catch(() => {});
     } else {
@@ -43,6 +45,22 @@ function handleNewAlerts(alerts: Alert[]) {
       triggerNotification(newAlert);
     }
   }
+
+  newAlerts.forEach((alert) => {
+    if (!isCriticalAlert(alert) || escalatedAlertIds.has(alert.id)) return;
+
+    const worker = workers.find((entry) => entry.id === alert.workerId);
+    void sendCriticalAlertEscalation(alert, {
+      managerPhone: manager?.phone,
+      workerPhone: worker?.phone,
+      workerEmergencyContact: worker?.emergencyContact,
+      workerDisplayName: worker?.name || alert.workerName,
+    }).catch((error) => {
+      console.warn('Failed to send SMS escalation:', error);
+    });
+
+    escalatedAlertIds.add(alert.id);
+  });
 
   seenAlertIds = new Set(alerts.map(a => a.id));
 }
@@ -70,7 +88,7 @@ interface AppState {
   setActiveTab: (tab: string) => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
   manager: null,
   setManager: (manager) => set({ manager }),
 
@@ -113,6 +131,7 @@ export const useStore = create<AppState>((set) => ({
           workerPosture: s.posture,
           mode: s.mode,
           manholeId: s.manhole_id,
+          zone: s.zone || '—',
           locationLabel: s.location_label,
           gasWarming: s.gasWarming,
           workerId: id,
@@ -122,6 +141,8 @@ export const useStore = create<AppState>((set) => ({
           fallAlert: s.fallAlert || false,
           sosAlert: s.sosAlert || false,
           batteryLevel: s.batteryLevel || 100,
+          safetyStatus: s.status || 'NORMAL',
+          lastUpdated: s.last_seen || Date.now(),
         };
 
         mapped[id] = sensor;
@@ -130,33 +151,42 @@ export const useStore = create<AppState>((set) => ({
         if (sensor.gasAlert) {
           generatedAlerts.push({
             id: `${id}-gas-${Date.now()}`,
-            type: 'GAS_CRITICAL',
+            workerId: id,
+            type: 'CH4_CRITICAL',
             workerName: id,
             zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
             value: `${sensor.ch4} ppm`,
             resolved: false,
+            timestamp: Timestamp.now(),
           } as Alert);
         }
 
         if (sensor.sosAlert) {
           generatedAlerts.push({
             id: `${id}-sos-${Date.now()}`,
+            workerId: id,
             type: 'SOS',
             workerName: id,
             zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
             value: 'SOS Triggered',
             resolved: false,
+            timestamp: Timestamp.now(),
           } as Alert);
         }
 
         if (sensor.fallAlert) {
           generatedAlerts.push({
             id: `${id}-fall-${Date.now()}`,
+            workerId: id,
             type: 'INACTIVITY',
             workerName: id,
             zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
             value: 'Fall Detected',
             resolved: false,
+            timestamp: Timestamp.now(),
           } as Alert);
         }
       }
@@ -168,7 +198,7 @@ export const useStore = create<AppState>((set) => ({
           const updatedAlerts = [...generatedAlerts, ...state.alerts];
           
           // 🔔 GLOBAL ALERT HANDLING
-          handleNewAlerts(updatedAlerts);
+          handleNewAlerts(updatedAlerts, get().manager, get().workers);
 
           return { alerts: updatedAlerts };
         });

@@ -1,12 +1,12 @@
 // app/(dashboard)/alerts.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Animated, Dimensions, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
-import { resolveAlert, Alert as AlertType } from '@/services/sensorService';
+import { resolveAlert, acknowledgeAlert, Alert as AlertType } from '@/services/sensorService';
 import { playAlertSound } from '@/utils/alertSound';
 
 const ALERT_ICONS: Record<string, string> = {
@@ -71,7 +71,56 @@ export default function AlertsScreen() {
 
   const unresolvedCount = alerts.filter(a => !a.resolved).length;
 
+  const doAcknowledge = async (alert: AlertType) => {
+    try {
+      await acknowledgeAlert(alert.id, manager?.name || 'Manager');
+    } catch (e) {
+      Alert.alert('Error', 'Could not acknowledge alert. Check connection.');
+    }
+  };
+
+  const doResolve = async (alert: AlertType) => {
+    try {
+      await resolveAlert(alert.id, manager?.name || 'Manager');
+    } catch (e) {
+      Alert.alert('Error', 'Could not resolve alert. Check connection.');
+    }
+  };
+
+  const handleAcknowledge = (alert: AlertType) => {
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm(`Acknowledge that you are responding to this ${T.alert[alert.type]}?`);
+      if (confirmed) {
+        void doAcknowledge(alert);
+      }
+      return;
+    }
+
+    Alert.alert(
+      'Acknowledge Alert',
+      `Acknowledge that you are responding to this ${T.alert[alert.type]}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Acknowledge',
+          style: 'default',
+          onPress: async () => {
+            await doAcknowledge(alert);
+          },
+        },
+      ]
+    );
+  };
+
   const handleResolve = (alert: AlertType) => {
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm(`Mark this ${T.alert[alert.type]} alert as resolved?`);
+      if (confirmed) {
+        void doResolve(alert);
+      }
+      return;
+    }
+
     Alert.alert(
       'Resolve Alert',
       `Mark this ${T.alert[alert.type]} alert as resolved?`,
@@ -81,11 +130,7 @@ export default function AlertsScreen() {
           text: 'Resolve',
           style: 'destructive',
           onPress: async () => {
-            try {
-              await resolveAlert(alert.id, manager?.name || 'Manager');
-            } catch (e) {
-              Alert.alert('Error', 'Could not resolve alert. Check connection.');
-            }
+            await doResolve(alert);
           },
         },
       ]
@@ -146,9 +191,9 @@ export default function AlertsScreen() {
           const color = ALERT_COLORS[item.type] || Colors.warning;
           const icon = ALERT_ICONS[item.type] || 'alert';
           return (
-            <View style={[styles.alertCard, item.resolved && styles.alertCardResolved]}>
+            <View style={[styles.alertCard, item.resolved && styles.alertCardResolved, { borderLeftColor: color }]}>
               <View style={[styles.alertIconBox, { backgroundColor: color + '18' }]}>
-                <MaterialCommunityIcons name={icon as any} size={24} color={item.resolved ? Colors.textMuted : color} />
+                <MaterialCommunityIcons name={icon as any} size={28} color={item.resolved ? Colors.textMuted : color} />
               </View>
               <View style={styles.alertBody}>
                 <View style={styles.alertTop}>
@@ -166,15 +211,29 @@ export default function AlertsScreen() {
                   <Text style={styles.alertMetaText}>📍 {item.zone}</Text>
                   <Text style={styles.alertMetaText}>• {item.value}</Text>
                 </View>
+                {item.acknowledged && !item.resolved && (
+                  <View style={styles.acknowledgedBadge}>
+                    <MaterialCommunityIcons name="check-circle" size={13} color={Colors.info} />
+                    <Text style={styles.acknowledgedText}>Acknowledged by {item.acknowledgedBy}</Text>
+                  </View>
+                )}
                 {!item.resolved && (
-                  <TouchableOpacity style={[styles.resolveBtn, { borderColor: color }]} onPress={() => handleResolve(item)}>
-                    <MaterialCommunityIcons name="check" size={14} color={color} />
-                    <Text style={[styles.resolveBtnText, { color }]}>{T.common.resolve}</Text>
-                  </TouchableOpacity>
+                  <View style={styles.actionButtons}>
+                    {!item.acknowledged && (
+                      <TouchableOpacity style={[styles.actionBtn, styles.acknowledgeBtn]} onPress={() => handleAcknowledge(item)}>
+                        <MaterialCommunityIcons name="bell-check" size={14} color={Colors.white} />
+                        <Text style={styles.actionBtnText}>Acknowledge</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity style={[styles.actionBtn, styles.resolveBtn, { borderColor: color }]} onPress={() => handleResolve(item)}>
+                      <MaterialCommunityIcons name="check" size={14} color={color} />
+                      <Text style={[styles.actionBtnText, { color }]}>Resolve</Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
                 {item.resolved && (
                   <View style={styles.resolvedBadge}>
-                    <MaterialCommunityIcons name="check-circle" size={12} color={Colors.success} />
+                    <MaterialCommunityIcons name="check-circle" size={13} color={Colors.success} />
                     <Text style={styles.resolvedText}>Resolved by {item.resolvedBy}</Text>
                   </View>
                 )}
@@ -189,32 +248,37 @@ export default function AlertsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md },
-  headerTitle: { color: Colors.white, fontSize: 18, fontFamily: 'Poppins_700Bold' },
-  headerSub: { color: '#FFB8B8', fontSize: 12, fontFamily: 'Poppins_400Regular' },
-  badge: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
-  badgeText: { color: Colors.white, fontSize: 14, fontFamily: 'Poppins_700Bold' },
-  filtersRow: { flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: 8 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: BorderRadius.full, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border },
+  header: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md + 2, ...Shadows.md },
+  headerTitle: { color: Colors.white, fontSize: 20, fontFamily: 'Poppins_700Bold', letterSpacing: -0.5 },
+  headerSub: { color: 'rgba(255, 184, 184, 0.9)', fontSize: 13, fontFamily: 'Poppins_500Medium', marginTop: 2 },
+  badge: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.2)', ...Shadows.sm },
+  badgeText: { color: Colors.white, fontSize: 16, fontFamily: 'Poppins_700Bold' },
+  filtersRow: { flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, gap: 8, backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  filterChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: BorderRadius.full, backgroundColor: Colors.background, borderWidth: 1.5, borderColor: Colors.border },
   filterChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  filterText: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: Colors.textSecondary },
-  filterTextActive: { color: Colors.white },
-  alertCard: { backgroundColor: Colors.white, borderRadius: BorderRadius.md, padding: Spacing.md, flexDirection: 'row', gap: Spacing.sm, ...Shadows.sm },
-  alertCardResolved: { opacity: 0.65 },
-  alertIconBox: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center' },
-  alertBody: { flex: 1, gap: 3 },
+  filterText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: Colors.textSecondary },
+  filterTextActive: { color: Colors.white, fontFamily: 'Poppins_600SemiBold' },
+  alertCard: { backgroundColor: Colors.white, borderRadius: BorderRadius.lg, padding: Spacing.md, flexDirection: 'row', gap: Spacing.md, marginHorizontal: Spacing.xs, ...Shadows.md, borderLeftWidth: 4 },
+  alertCardResolved: { opacity: 0.6, borderLeftColor: Colors.textMuted },
+  alertIconBox: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', flexShrink: 0 },
+  alertBody: { flex: 1, gap: 4 },
   alertTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  alertType: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary },
+  alertType: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary, letterSpacing: -0.3 },
   alertTextMuted: { color: Colors.textMuted },
-  alertTime: { fontSize: 12, fontFamily: 'Poppins_500Medium' },
-  alertWorker: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: Colors.textPrimary },
-  alertMeta: { flexDirection: 'row', gap: 4 },
-  alertMetaText: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary },
-  resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: BorderRadius.full, paddingHorizontal: 10, paddingVertical: 4, alignSelf: 'flex-start', marginTop: 4 },
-  resolveBtnText: { fontSize: 12, fontFamily: 'Poppins_500Medium' },
-  resolvedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  resolvedText: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: Colors.success },
-  empty: { alignItems: 'center', padding: 48, gap: 8 },
-  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary },
-  emptyText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary },
+  alertTime: { fontSize: 13, fontFamily: 'Poppins_500Medium' },
+  alertWorker: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary },
+  alertMeta: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  alertMetaText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: Colors.textSecondary },
+  actionButtons: { flexDirection: 'row', gap: 8, marginTop: 10, alignItems: 'center' },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start', ...Shadows.sm },
+  acknowledgeBtn: { backgroundColor: Colors.info, borderWidth: 0 },
+  resolveBtn: { borderWidth: 1.5 },
+  actionBtnText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', textAlign: 'center' },
+  acknowledgedBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, backgroundColor: Colors.infoBg, paddingHorizontal: 10, paddingVertical: 6, borderRadius: BorderRadius.sm },
+  acknowledgedText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: Colors.info },
+  resolvedBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, backgroundColor: Colors.successBg, paddingHorizontal: 10, paddingVertical: 6, borderRadius: BorderRadius.sm },
+  resolvedText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: Colors.success },
+  empty: { alignItems: 'center', padding: Spacing.xl, gap: Spacing.md },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: Colors.textPrimary },
+  emptyText: { fontSize: 14, fontFamily: 'Poppins_500Medium', color: Colors.textSecondary },
 });

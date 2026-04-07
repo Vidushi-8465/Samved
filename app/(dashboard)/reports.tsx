@@ -1,5 +1,5 @@
 // app/(dashboard)/reports.tsx
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import Svg, { Rect, Line, Text as SvgText, Circle, Path, Defs, LinearGradient, S
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
+import { listenToWorkers, listenToAlerts, listenToAllSensors, SOLAPUR_ZONES, SensorData, WorkerProfile, Alert as LiveAlert } from '@/services/sensorService';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -77,7 +78,10 @@ function timestampToDate(ts: any): Date | null {
   if (!ts) return null;
   if (ts?.toDate) return ts.toDate();
   if (ts instanceof Date) return ts;
-  if (typeof ts === 'number') return new Date(ts);
+  if (typeof ts === 'number') {
+    // Some devices can emit epoch seconds, while Firebase snapshots use epoch ms.
+    return new Date(ts < 1_000_000_000_000 ? ts * 1000 : ts);
+  }
   return new Date(ts);
 }
 
@@ -573,15 +577,54 @@ export default function ReportsScreen() {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [liveWorkers, setLiveWorkers] = useState<WorkerProfile[]>([]);
+  const [liveSensors, setLiveSensors] = useState<Record<string, SensorData>>({});
+  const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([]);
+
+  useEffect(() => {
+    if (!manager) return;
+
+    let sensorUnsub: (() => void) | null = null;
+
+    const unsubWorkers = listenToWorkers(manager.uid, (nextWorkers) => {
+      setLiveWorkers(nextWorkers);
+
+      if (sensorUnsub) {
+        sensorUnsub();
+        sensorUnsub = null;
+      }
+
+      if (nextWorkers.length > 0) {
+        sensorUnsub = listenToAllSensors(nextWorkers.map((worker) => worker.id), setLiveSensors);
+      } else {
+        setLiveSensors({});
+      }
+    });
+
+    const zones = manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map((zone) => zone.id);
+    const unsubAlerts = listenToAlerts(zones, setLiveAlerts);
+
+    return () => {
+      if (sensorUnsub) {
+        sensorUnsub();
+      }
+      unsubWorkers();
+      unsubAlerts();
+    };
+  }, [manager]);
+
+  const effectiveWorkers = liveWorkers.length > 0 ? liveWorkers : workers;
+  const effectiveSensors = Object.keys(liveSensors).length > 0 ? liveSensors : sensors;
+  const effectiveAlerts = liveAlerts.length > 0 ? liveAlerts : alerts;
 
   // ── Derive premonitoringReadings from sensors store ──────────────────────
   // sensors/{workerId} has: heartRate, spO2, mode, zone, locationLabel, lastUpdated
   // We use ALL sensor entries as pre-monitoring readings (live snapshot).
   // Timestamps: use sensor.lastUpdated (unix ms) if available, else now.
   const premonitoringReadings = useMemo((): PremonitoringReading[] => {
-    return Object.entries(sensors).map(([workerId, s]) => ({
+    return Object.entries(effectiveSensors).map(([workerId, s]) => ({
       workerId,
-      workerName: workers.find((w: any) => w.id === workerId)?.name ?? workerId,
+      workerName: effectiveWorkers.find((w: any) => w.id === workerId)?.name ?? workerId,
       zone: s.zone ?? s.locationLabel ?? 'Unknown',
       heartRate: s.heartRate && s.heartRate > 0 ? s.heartRate : null,
       spo2: s.spO2 && s.spO2 > 0 ? s.spO2 : null,
@@ -589,13 +632,13 @@ export default function ReportsScreen() {
       // Use lastUpdated (RTDB epoch ms), fall back to now so period filter always passes
       timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
     }));
-  }, [sensors, workers]);
+  }, [effectiveSensors, effectiveWorkers]);
 
   // ── Derive gasReadings from sensors store ────────────────────────────────
   // sensors/{workerId} has: ch4 (mq4_ppm), h2s (mq7_ppm), zone, manholeId, lastUpdated
   // co, o2, nh3 not available in current hardware — will show as null
   const gasReadings = useMemo((): GasReading[] => {
-    return Object.entries(sensors).map(([, s]) => ({
+    return Object.entries(effectiveSensors).map(([, s]) => ({
       zone: s.zone ?? s.locationLabel ?? 'Unknown',
       sewerLine: s.manholeId ?? s.locationLabel ?? 'Unknown',
       ch4: s.ch4 && s.ch4 > 0 ? s.ch4 : null,
@@ -605,13 +648,13 @@ export default function ReportsScreen() {
       nh3: null, // No NH3 sensor in current hardware
       timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
     }));
-  }, [sensors]);
+  }, [effectiveSensors]);
 
   // ── Alerts ──────────────────────────────────────────────────────────────────
   // Alerts generated in useStore have no timestamp field — add Date.now() fallback
   const periodAlerts = useMemo(
-    () => (alerts as ReportAlert[]).filter((a) => isInPeriod(a.timestamp ?? Date.now(), period)),
-    [alerts, period]
+    () => (effectiveAlerts as ReportAlert[]).filter((a) => isInPeriod(a.timestamp ?? Date.now(), period)),
+    [effectiveAlerts, period]
   );
   const totalAlerts = periodAlerts.length;
   const resolvedAlerts = periodAlerts.filter((a) => a.resolved).length;
@@ -677,20 +720,20 @@ export default function ReportsScreen() {
   // ── Zone rows ───────────────────────────────────────────────────────────────
   const zoneRows = useMemo(() => {
     const zones = [...new Set([
-      ...workers.map((w: any) => w.zone),
+      ...effectiveWorkers.map((w: any) => w.zone),
       ...periodAlerts.map((a) => a.zone),
-      ...Object.values(sensors).map((s) => s.zone ?? s.locationLabel),
+      ...Object.values(effectiveSensors).map((s) => s.zone ?? s.locationLabel),
     ].filter(Boolean))];
     return zones.map((zoneId: string) => {
       const za = periodAlerts.filter((a) => a.zone === zoneId);
       return {
         name: `${zoneId.charAt(0).toUpperCase() + zoneId.slice(1)} Zone`,
-        workers: workers.filter((w: any) => w.zone === zoneId).length,
+        workers: effectiveWorkers.filter((w: any) => w.zone === zoneId).length,
         alerts: za.length,
         resolvedRate: za.length ? Math.round((za.filter((a) => a.resolved).length / za.length) * 100) : 100,
       };
     });
-  }, [workers, periodAlerts, sensors]);
+  }, [effectiveWorkers, periodAlerts, effectiveSensors]);
 
   const recentAlerts = useMemo(
     () => [...periodAlerts]
@@ -706,7 +749,7 @@ export default function ReportsScreen() {
       const result = await fetchAiAnalysis(buildAnalysisPrompt({
         period, totalAlerts, resolvedAlerts, resolutionRate,
         alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
-        premonitoringStats, overallGas, gasStats, workersCount: workers.length,
+        premonitoringStats, overallGas, gasStats, workersCount: effectiveWorkers.length,
       }));
       setAiAnalysis(result);
     } catch (e: any) {
@@ -714,12 +757,12 @@ export default function ReportsScreen() {
     } finally {
       setAiLoading(false);
     }
-  }, [period, totalAlerts, resolvedAlerts, resolutionRate, alertsByType, premonitoringStats, overallGas, gasStats, workers]);
+  }, [period, totalAlerts, resolvedAlerts, resolutionRate, alertsByType, premonitoringStats, overallGas, gasStats, effectiveWorkers.length]);
 
   // ── Report params ───────────────────────────────────────────────────────────
   const reportParams: ReportParams = {
     period, managerName: manager?.name || 'Manager',
-    workersCount: workers.length, totalAlerts, resolvedAlerts, resolutionRate,
+    workersCount: effectiveWorkers.length, totalAlerts, resolvedAlerts, resolutionRate,
     alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
     zoneRows, recentAlerts, premonitoringStats, gasStats, overallGas,
     aiAnalysis: aiAnalysis ?? undefined,
@@ -810,11 +853,11 @@ export default function ReportsScreen() {
         </View>
 
         {/* Live data notice */}
-        {Object.keys(sensors).length > 0 && (
+        {Object.keys(effectiveSensors).length > 0 && (
           <View style={styles.liveNotice}>
             <MaterialCommunityIcons name="access-point" size={14} color={Colors.success} />
             <Text style={styles.liveNoticeText}>
-              Live data from {Object.keys(sensors).length} sensor{Object.keys(sensors).length !== 1 ? 's' : ''} · Updates in real-time
+              Live data from {Object.keys(effectiveSensors).length} sensor{Object.keys(effectiveSensors).length !== 1 ? 's' : ''} · Updates in real-time
             </Text>
           </View>
         )}
@@ -825,7 +868,7 @@ export default function ReportsScreen() {
           <Text style={styles.cardSub}>Period: This {period} · Manager: {manager?.name ?? '—'}</Text>
           <View style={styles.summaryGrid}>
             {[
-              { label: 'Total Workers',   value: String(workers.length),  icon: 'account-hard-hat', color: Colors.primary },
+              { label: 'Total Workers',   value: String(effectiveWorkers.length),  icon: 'account-hard-hat', color: Colors.primary },
               { label: 'Total Alerts',    value: String(totalAlerts),      icon: 'alarm-light',      color: Colors.danger  },
               { label: 'Resolved',        value: String(resolvedAlerts),   icon: 'check-circle',     color: Colors.success },
               { label: 'Resolution Rate', value: `${resolutionRate}%`,     icon: 'percent',          color: Colors.accent  },

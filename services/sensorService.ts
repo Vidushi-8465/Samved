@@ -19,8 +19,10 @@ export interface SensorData {
   // Motion / fall
   motionAlert: number;    // 0=normal 1=fall 2=inactive 3=tilt 4=multiple
   fallDetected: boolean;
+  fallAlert?: boolean;
   workerPosture: string;  // standing | stationary | tilted | fallen
   sosTriggered: boolean;
+  sosAlert?: boolean;
   // Signal
   rssi: number;           // LoRa signal strength dBm
   // Location
@@ -29,6 +31,7 @@ export interface SensorData {
   locationLabel: string;
   lastGpsLat: number;
   lastGpsLng: number;
+  batteryLevel?: number;
   // Mode + status
   mode: 'premonitoring' | 'monitoring';
   safetyStatus: string;
@@ -52,7 +55,7 @@ export interface Alert {
   id: string;
   workerId: string;
   workerName: string;
-  type: 'SOS' | 'FALL' | 'CH4_HIGH' | 'CH4_CRITICAL' | 'H2S_HIGH' |
+  type: 'SOS' | 'FALL' | 'GAS_HIGH' | 'GAS_CRITICAL' | 'TEMPERATURE' | 'CH4_HIGH' | 'CH4_CRITICAL' | 'H2S_HIGH' |
         'H2S_CRITICAL' | 'SPO2_LOW' | 'SPO2_CRITICAL' | 'HEARTRATE' | 'INACTIVITY';
   value: string;
   zone: string;
@@ -61,6 +64,10 @@ export interface Alert {
   resolved: boolean;
   resolvedBy?: string;
   resolvedAt?: Timestamp;
+  acknowledged: boolean;
+  acknowledgedBy?: string;
+  acknowledgedAt?: Timestamp;
+  escalationLevel: 'manager' | 'supervisor' | 'emergency';
 }
 
 export type SafetyStatus = 'safe' | 'warning' | 'danger' | 'offline';
@@ -308,12 +315,61 @@ export const listenToAlerts = (
   );
 };
 
+export const acknowledgeAlert = async (alertId: string, acknowledgedBy: string) => {
+  await updateDoc(doc(db, 'alerts', alertId), {
+    acknowledged: true,
+    acknowledgedBy,
+    acknowledgedAt: Timestamp.now(),
+  });
+};
+
 export const resolveAlert = async (alertId: string, resolvedBy: string) => {
   await updateDoc(doc(db, 'alerts', alertId), {
     resolved: true,
     resolvedBy,
     resolvedAt: Timestamp.now(),
   });
+};
+
+export const predictSafeDuration = async (sensor: SensorData | null, worker: WorkerProfile | null): Promise<string | null> => {
+  if (!sensor || !worker) return null;
+  
+  try {
+    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://10.0.2.2:5000';
+    
+    const prompt = `Given a sewer worker in zone "${sensor.zone}", provide a brief safety estimate:
+- Current HR: ${sensor.heartRate} BPM
+- Current SpO₂: ${sensor.spO2}%
+- CH₄: ${sensor.ch4.toFixed(1)} ppm
+- CO (MQ7): ${sensor.h2s.toFixed(1)} ppm
+- Worker: ${worker.name}, Blood Group: ${worker.bloodGroup || 'Unknown'}
+
+Based on these vitals and gas levels, estimate how long this worker can safely remain inside the sewer safely without risking health. Respond with ONLY a single line: "Safe Duration: X minutes" and 1-2 words reason (e.g., "Safe Duration: 45 minutes - moderate CH4").`;
+
+    const response = await fetch(`${backendUrl}/ai-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+
+    if (!response.ok) {
+      console.warn('AI analysis failed:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const result = data?.result || null;
+    
+    // Extract just the duration line if multiple lines returned
+    if (result && typeof result === 'string') {
+      return result.split('\n')[0].trim();
+    }
+    
+    return result;
+  } catch (error) {
+    console.warn('Safe duration prediction error:', error);
+    return null;
+  }
 };
 
 // ── Solapur Zones ─────────────────────────────────────────────

@@ -12,7 +12,7 @@ import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import {
   listenToWorkers, listenToAlerts, listenToAllSensors,
-  getSensorStatus, SOLAPUR_ZONES, SENSOR_THRESHOLDS, SensorData, Alert, SafetyStatus
+  getSensorStatus, SOLAPUR_ZONES, SENSOR_THRESHOLDS, SensorData, Alert, SafetyStatus, WorkerProfile
 } from '@/services/sensorService';
 import { logoutManager } from '@/services/authService';
 import { ref, onValue, off } from 'firebase/database';
@@ -152,13 +152,36 @@ function WorkerConditionCard({
   timer,
   onToggleTimer,
   formatElapsed,
+  worker,
+  manager,
 }: {
   sensor?: SensorData | null;
   workerEmployeeId: string;
   timer?: { timeIn: Date; elapsed: number; running: boolean };
   onToggleTimer: () => void;
   formatElapsed: (seconds: number) => string;
+  worker?: WorkerProfile | null;
+  manager?: any;
 }) {
+  const [safeDuration, setSafeDuration] = React.useState<string | null>(null);
+  const [loadingSafeDuration, setLoadingSafeDuration] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!sensor || !worker || sensor.mode !== 'monitoring') {
+      setSafeDuration(null);
+      return;
+    }
+
+    const fetchSafeDuration = async () => {
+      setLoadingSafeDuration(true);
+      const { predictSafeDuration } = await import('@/services/sensorService');
+      const duration = await predictSafeDuration(sensor, worker);
+      setSafeDuration(duration);
+      setLoadingSafeDuration(false);
+    };
+
+    fetchSafeDuration();
+  }, [sensor?.heartRate, sensor?.spO2, sensor?.ch4, sensor?.h2s, worker?.id]);
   const status = sensor ? getSensorStatus(sensor) : null;
   const isActive = !!sensor;
   const isFall = sensor?.fallDetected;
@@ -232,6 +255,19 @@ function WorkerConditionCard({
         </View>
       </View>
 
+      {safeDuration && (
+        <View style={[wc.safeDurationBox]}>
+          <MaterialCommunityIcons name="clock-check" size={18} color="#2ECC71" />
+          <View style={{ flex: 1 }}>
+            <Text style={wc.safeDurationLabel}>Safe Duration Estimate</Text>
+            <Text style={wc.safeDurationValue}>{safeDuration}</Text>
+          </View>
+          {loadingSafeDuration && (
+            <MaterialCommunityIcons name="loading" size={16} color="#94A3B8" />
+          )}
+        </View>
+      )}
+
       <View style={wc.timerSection}>
         <View style={wc.timerMeta}>
           <Text style={wc.timerLabel}>Work Session</Text>
@@ -270,6 +306,9 @@ const wc = StyleSheet.create({
   sysBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 8, padding: 12, marginTop: 6 },
   sysTitle: { fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   sysSub: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  safeDurationBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 8, padding: 12, marginTop: 6, backgroundColor: '#E8F8F0', borderWidth: 1, borderColor: '#2ECC71' },
+  safeDurationLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B' },
+  safeDurationValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: '#27AE60', marginTop: 2 },
   timerSection: {
     marginTop: 10,
     paddingTop: 10,
@@ -1032,6 +1071,8 @@ export default function OverviewScreen() {
                   }
                 }}
                 formatElapsed={formatElapsed}
+                worker={selectedWorker}
+                manager={manager}
               />
               <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
             </View>
@@ -1056,6 +1097,8 @@ export default function OverviewScreen() {
                 }
               }}
               formatElapsed={formatElapsed}
+              worker={selectedWorker}
+              manager={manager}
             />
             <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
