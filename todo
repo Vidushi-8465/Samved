@@ -14,9 +14,12 @@ Gas based prediction
 Worker time in and out (DONE)
 
 
-API error in ai analysis in reports section 
+API error in ai analysis in reports section (Done)
 no graph generated and shown on dashboard 
 
+**Can you Improve the UI of the dashboard and the home page. 
+Like Can you give a readable but attractive font and it should look best on phone view as well as website. 
+and apart from that dont change anything else **
 
 I’ll verify how those three report sections are populated by tracing app/(dashboard)/reports.tsx/reports.tsx) and the related data services, then confirm whether the data path actually comes from Firebase.I’m gathering the relevant code paths now: the report screen plus sensor/data services and Firebase config, so I can map each section to its actual source.
 

@@ -77,6 +77,7 @@ function timestampToDate(ts: any): Date | null {
   if (!ts) return null;
   if (ts?.toDate) return ts.toDate();
   if (ts instanceof Date) return ts;
+  if (typeof ts === 'number') return new Date(ts);
   return new Date(ts);
 }
 
@@ -93,12 +94,15 @@ function getPeriodStart(period: Period): Date {
 }
 
 function isInPeriod(ts: any, period: Period): boolean {
+  // If no timestamp, treat as current (live sensor data) — always include
+  if (ts == null) return true;
   const d = timestampToDate(ts);
-  return !!d && d >= getPeriodStart(period);
+  if (!d || isNaN(d.getTime())) return true;
+  return d >= getPeriodStart(period);
 }
 
 function avg(values: (number | null | undefined)[]): number | null {
-  const v = values.filter((x): x is number => x != null && !isNaN(x));
+  const v = values.filter((x): x is number => x != null && !isNaN(x) && x > 0);
   if (!v.length) return null;
   return Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10;
 }
@@ -124,9 +128,10 @@ function getBucketIndex(date: Date, period: Period): number {
 function getAlertTrend(alerts: ReportAlert[], period: Period) {
   const labels = getPeriodBuckets(period);
   const buckets = new Array(labels.length).fill(0);
+  const now = new Date();
   alerts.forEach((a) => {
-    const d = timestampToDate(a.timestamp);
-    if (d) buckets[getBucketIndex(d, period)] += 1;
+    const d = timestampToDate(a.timestamp) ?? now;
+    buckets[getBucketIndex(d, period)] += 1;
   });
   return labels.map((label, i) => ({ label, value: buckets[i] }));
 }
@@ -134,10 +139,11 @@ function getAlertTrend(alerts: ReportAlert[], period: Period) {
 function getGasTrend(readings: GasReading[], gasKey: GasKey, period: Period) {
   const labels = getPeriodBuckets(period);
   const buckets: number[][] = labels.map(() => []);
+  const now = new Date();
   readings.forEach((r) => {
-    const d = timestampToDate(r.timestamp);
+    const d = timestampToDate(r.timestamp) ?? now;
     const val = r[gasKey];
-    if (d && val != null) buckets[getBucketIndex(d, period)].push(val as number);
+    if (val != null && val > 0) buckets[getBucketIndex(d, period)].push(val as number);
   });
   return labels.map((label, i) => ({
     label,
@@ -291,7 +297,6 @@ function GaugeChart({ value, max, color, label, unit }: { value: number | null; 
 
 
 // ─── AI Analysis ─────────────────────────────────────────────────────────────
-// run node server.js in backend/ to start AI server before using this feature
 const AI_ANALYSIS_URL =
   process.env.EXPO_PUBLIC_AI_ANALYSIS_URL?.trim() ||
   (Platform.OS === 'android'
@@ -305,32 +310,20 @@ async function fetchAiAnalysis(prompt: string): Promise<string> {
   try {
     const res = await fetch(AI_ANALYSIS_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt }),
       signal: controller.signal,
     });
 
-    if (!res.ok) {
-      throw new Error(`AI server error (${res.status})`);
-    }
+    if (!res.ok) throw new Error(`AI server error (${res.status})`);
 
     const data = await res.json();
     const text = typeof data?.result === 'string' ? data.result.trim() : '';
-
-    if (!text) {
-      throw new Error('AI server returned an empty response');
-    }
-
+    if (!text) throw new Error('AI server returned an empty response');
     return text;
   } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      throw new Error('AI request timed out. Please try again.');
-    }
-    if (error instanceof TypeError) {
-      throw new Error(`Cannot reach AI server at ${AI_ANALYSIS_URL}. Check backend URL/network.`);
-    }
+    if (error?.name === 'AbortError') throw new Error('AI request timed out. Please try again.');
+    if (error instanceof TypeError) throw new Error(`Cannot reach AI server at ${AI_ANALYSIS_URL}. Check backend URL/network.`);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -398,10 +391,7 @@ NH3: ${g.avgNh3 ?? "N/A"} ppm (>25 TWA)
 
 BY ZONE:
 ${p.gasStats
-  .map(
-    z =>
-      `${z.zone}/${z.sewerLine}: CH4=${z.avgCh4 ?? "N/A"}, H2S=${z.avgH2s ?? "N/A"}, CO=${z.avgCo ?? "N/A"}, O2=${z.avgO2 ?? "N/A"}%, NH3=${z.avgNh3 ?? "N/A"} (${z.readingsCount})`
-  )
+  .map(z => `${z.zone}/${z.sewerLine}: CH4=${z.avgCh4 ?? "N/A"}, H2S=${z.avgH2s ?? "N/A"}, CO=${z.avgCo ?? "N/A"}, O2=${z.avgO2 ?? "N/A"}%, NH3=${z.avgNh3 ?? "N/A"} (${z.readingsCount})`)
   .join("\n")}
 
 Provide sections:
@@ -573,7 +563,8 @@ async function openPdfWeb(html: string) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ReportsScreen() {
-  const { language, workers, alerts, manager, premonitoringReadings, gasReadings } = useStore();
+  // ── Pull everything from store ───────────────────────────────────────────
+  const { language, workers, alerts, manager, sensors } = useStore();
   const T = getText(language);
   const [period, setPeriod] = useState<Period>('week');
   const [exporting, setExporting] = useState<false | 'pdf' | 'csv' | 'both'>(false);
@@ -583,9 +574,43 @@ export default function ReportsScreen() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // ── Derive premonitoringReadings from sensors store ──────────────────────
+  // sensors/{workerId} has: heartRate, spO2, mode, zone, locationLabel, lastUpdated
+  // We use ALL sensor entries as pre-monitoring readings (live snapshot).
+  // Timestamps: use sensor.lastUpdated (unix ms) if available, else now.
+  const premonitoringReadings = useMemo((): PremonitoringReading[] => {
+    return Object.entries(sensors).map(([workerId, s]) => ({
+      workerId,
+      workerName: workers.find((w: any) => w.id === workerId)?.name ?? workerId,
+      zone: s.zone ?? s.locationLabel ?? 'Unknown',
+      heartRate: s.heartRate && s.heartRate > 0 ? s.heartRate : null,
+      spo2: s.spO2 && s.spO2 > 0 ? s.spO2 : null,
+      temperature: null, // not available in your sensor schema
+      // Use lastUpdated (RTDB epoch ms), fall back to now so period filter always passes
+      timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+    }));
+  }, [sensors, workers]);
+
+  // ── Derive gasReadings from sensors store ────────────────────────────────
+  // sensors/{workerId} has: ch4 (mq4_ppm), h2s (mq7_ppm), zone, manholeId, lastUpdated
+  // co, o2, nh3 not available in current hardware — will show as null
+  const gasReadings = useMemo((): GasReading[] => {
+    return Object.entries(sensors).map(([, s]) => ({
+      zone: s.zone ?? s.locationLabel ?? 'Unknown',
+      sewerLine: s.manholeId ?? s.locationLabel ?? 'Unknown',
+      ch4: s.ch4 && s.ch4 > 0 ? s.ch4 : null,
+      h2s: s.h2s && s.h2s > 0 ? s.h2s : null,
+      co: null,  // MQ7 maps to H2S in your schema — CO sensor not wired separately
+      o2: null,  // No O2 sensor in current hardware
+      nh3: null, // No NH3 sensor in current hardware
+      timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+    }));
+  }, [sensors]);
+
   // ── Alerts ──────────────────────────────────────────────────────────────────
+  // Alerts generated in useStore have no timestamp field — add Date.now() fallback
   const periodAlerts = useMemo(
-    () => (alerts as ReportAlert[]).filter((a) => isInPeriod(a.timestamp, period)),
+    () => (alerts as ReportAlert[]).filter((a) => isInPeriod(a.timestamp ?? Date.now(), period)),
     [alerts, period]
   );
   const totalAlerts = periodAlerts.length;
@@ -594,15 +619,15 @@ export default function ReportsScreen() {
 
   const alertsByType = useMemo(() => [
     { label: 'SOS',        color: Colors.danger,  icon: 'alarm-light',       match: (t: string) => t === 'SOS' },
-    { label: 'Gas',        color: Colors.warning, icon: 'gas-cylinder',      match: (t: string) => ['GAS','CH4','H2S','CO','O2','NH3'].some((k) => t.includes(k)) },
+    { label: 'Gas',        color: Colors.warning, icon: 'gas-cylinder',      match: (t: string) => ['GAS', 'GAS_CRITICAL', 'CH4', 'H2S', 'CO', 'O2', 'NH3'].some((k) => t.includes(k)) },
     { label: 'SpO\u2082', color: Colors.accent,  icon: 'thermometer-alert', match: (t: string) => t.startsWith('SPO2') },
     { label: 'Inactivity', color: Colors.info,    icon: 'timer-off',         match: (t: string) => t === 'INACTIVITY' },
     { label: 'Heart Rate', color: '#9B59B6',      icon: 'heart-broken',      match: (t: string) => t === 'HEARTRATE' },
   ].map((type) => ({ ...type, count: periodAlerts.filter((a) => type.match(a.type)).length })), [periodAlerts]);
 
-  // ── Premonitoring ───────────────────────────────────────────────────────────
+  // ── Premonitoring stats ─────────────────────────────────────────────────────
   const premonitoringStats = useMemo(() => {
-    const r: PremonitoringReading[] = (premonitoringReadings ?? []).filter((x: PremonitoringReading) => isInPeriod(x.timestamp, period));
+    const r = premonitoringReadings.filter((x) => isInPeriod(x.timestamp, period));
     return {
       readingsCount: r.length,
       avgHeartRate: avg(r.map((x) => x.heartRate ?? null)),
@@ -613,7 +638,7 @@ export default function ReportsScreen() {
 
   // ── Gas ─────────────────────────────────────────────────────────────────────
   const periodGasReadings = useMemo(
-    () => (gasReadings as GasReading[] ?? []).filter((r) => isInPeriod(r.timestamp, period)),
+    () => gasReadings.filter((r) => isInPeriod(r.timestamp, period)),
     [gasReadings, period]
   );
 
@@ -651,7 +676,11 @@ export default function ReportsScreen() {
 
   // ── Zone rows ───────────────────────────────────────────────────────────────
   const zoneRows = useMemo(() => {
-    const zones = [...new Set([...workers.map((w: any) => w.zone), ...periodAlerts.map((a) => a.zone)].filter(Boolean))];
+    const zones = [...new Set([
+      ...workers.map((w: any) => w.zone),
+      ...periodAlerts.map((a) => a.zone),
+      ...Object.values(sensors).map((s) => s.zone ?? s.locationLabel),
+    ].filter(Boolean))];
     return zones.map((zoneId: string) => {
       const za = periodAlerts.filter((a) => a.zone === zoneId);
       return {
@@ -661,10 +690,12 @@ export default function ReportsScreen() {
         resolvedRate: za.length ? Math.round((za.filter((a) => a.resolved).length / za.length) * 100) : 100,
       };
     });
-  }, [workers, periodAlerts]);
+  }, [workers, periodAlerts, sensors]);
 
   const recentAlerts = useMemo(
-    () => [...periodAlerts].sort((a, b) => (timestampToDate(b.timestamp)?.getTime() ?? 0) - (timestampToDate(a.timestamp)?.getTime() ?? 0)).slice(0, 20),
+    () => [...periodAlerts]
+      .sort((a, b) => (timestampToDate(b.timestamp ?? 0)?.getTime() ?? 0) - (timestampToDate(a.timestamp ?? 0)?.getTime() ?? 0))
+      .slice(0, 20),
     [periodAlerts]
   );
 
@@ -778,16 +809,26 @@ export default function ReportsScreen() {
           ))}
         </View>
 
+        {/* Live data notice */}
+        {Object.keys(sensors).length > 0 && (
+          <View style={styles.liveNotice}>
+            <MaterialCommunityIcons name="access-point" size={14} color={Colors.success} />
+            <Text style={styles.liveNoticeText}>
+              Live data from {Object.keys(sensors).length} sensor{Object.keys(sensors).length !== 1 ? 's' : ''} · Updates in real-time
+            </Text>
+          </View>
+        )}
+
         {/* Summary */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>📊 Summary</Text>
           <Text style={styles.cardSub}>Period: This {period} · Manager: {manager?.name ?? '—'}</Text>
           <View style={styles.summaryGrid}>
             {[
-              { label: 'Total Workers',   value: String(workers.length), icon: 'account-hard-hat', color: Colors.primary },
-              { label: 'Total Alerts',    value: String(totalAlerts),    icon: 'alarm-light',      color: Colors.danger  },
-              { label: 'Resolved',        value: String(resolvedAlerts), icon: 'check-circle',     color: Colors.success },
-              { label: 'Resolution Rate', value: `${resolutionRate}%`,   icon: 'percent',          color: Colors.accent  },
+              { label: 'Total Workers',   value: String(workers.length),  icon: 'account-hard-hat', color: Colors.primary },
+              { label: 'Total Alerts',    value: String(totalAlerts),      icon: 'alarm-light',      color: Colors.danger  },
+              { label: 'Resolved',        value: String(resolvedAlerts),   icon: 'check-circle',     color: Colors.success },
+              { label: 'Resolution Rate', value: `${resolutionRate}%`,     icon: 'percent',          color: Colors.accent  },
             ].map((s) => (
               <View key={s.label} style={styles.summaryItem}>
                 <MaterialCommunityIcons name={s.icon as any} size={20} color={s.color} />
@@ -808,6 +849,9 @@ export default function ReportsScreen() {
         {/* Alert Breakdown */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🚨 Alert Breakdown</Text>
+          {alertsByType.every(a => a.count === 0) && (
+            <Text style={styles.cardSub}>No alerts recorded this {period}.</Text>
+          )}
           {alertsByType.map((item) => (
             <View key={item.label} style={styles.alertRow}>
               <MaterialCommunityIcons name={item.icon as any} size={18} color={item.color} />
@@ -823,11 +867,11 @@ export default function ReportsScreen() {
         {/* Pre-monitoring vitals */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🩺 Pre-monitoring Vitals</Text>
-          <Text style={styles.cardSub}>{premonitoringStats.readingsCount} readings this {period}</Text>
+          <Text style={styles.cardSub}>{premonitoringStats.readingsCount} worker{premonitoringStats.readingsCount !== 1 ? 's' : ''} reporting vitals</Text>
           <View style={styles.summaryGrid}>
             {[
               { label: 'Avg Heart Rate', value: formatVal(premonitoringStats.avgHeartRate, ' bpm'), icon: 'heart-pulse',  color: Colors.danger  },
-              { label: 'Avg SpO\u2082',  value: formatVal(premonitoringStats.avgSpo2, '%'),         icon: 'lungs',        color: Colors.info    },
+              { label: 'Avg SpO\u2082',  value: formatVal(premonitoringStats.avgSpo2, '%'),          icon: 'lungs',        color: Colors.info    },
               { label: 'Avg Temp',       value: formatVal(premonitoringStats.avgTemperature, '\u00b0C'), icon: 'thermometer', color: Colors.warning },
             ].map((s) => (
               <View key={s.label} style={[styles.summaryItem, { width: '30%' }]}>
@@ -842,7 +886,13 @@ export default function ReportsScreen() {
         {/* Overall Gas — Gauges */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>☁️ Overall Gas Concentration</Text>
-          <Text style={styles.cardSub}>Averaged across all sewer lines · {periodGasReadings.length} readings</Text>
+          <Text style={styles.cardSub}>
+            Averaged across all sewer lines · {periodGasReadings.length} sensor{periodGasReadings.length !== 1 ? 's' : ''}
+            {'\n'}
+            <Text style={{ color: Colors.textSecondary, fontSize: 11 }}>
+              CO, O₂, NH₃ — not available in current hardware
+            </Text>
+          </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 8 }}>
             {GAS_CONFIG.map((g) => {
               const val = (overallGas as any)[`avg${g.key.charAt(0).toUpperCase() + g.key.slice(1)}`] as number | null;
@@ -886,7 +936,7 @@ export default function ReportsScreen() {
               <View key={`${g.zone}-${g.sewerLine}-${idx}`} style={styles.gasZoneRow}>
                 <View style={styles.gasZoneHeader}>
                   <Text style={styles.gasZoneName}>{g.zone} Zone</Text>
-                  <Text style={styles.gasZoneLine}>{g.sewerLine} · {g.readingsCount} readings</Text>
+                  <Text style={styles.gasZoneLine}>{g.sewerLine} · {g.readingsCount} reading{g.readingsCount !== 1 ? 's' : ''}</Text>
                 </View>
                 <View style={styles.gasGrid}>
                   {GAS_CONFIG.map((cfg) => {
@@ -1088,4 +1138,6 @@ const styles = StyleSheet.create({
   modalBtnHint:      { fontSize: 11, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary },
   modalCancelBtn:    { marginTop: 14, alignItems: 'center', paddingVertical: 8 },
   modalCancelText:   { fontSize: 14, fontFamily: 'Poppins_500Medium', color: Colors.textSecondary },
+  liveNotice:        { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.successBg ?? '#F0FDF4', borderRadius: BorderRadius.md, paddingHorizontal: 12, paddingVertical: 8 },
+  liveNoticeText:    { fontSize: 12, fontFamily: 'Poppins_400Regular', color: Colors.success },
 });

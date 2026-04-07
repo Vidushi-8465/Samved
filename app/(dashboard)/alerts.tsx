@@ -35,30 +35,30 @@ export default function AlertsScreen() {
   const [activeFilter, setActiveFilter] = useState('All');
   const seenAlertIds = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    if (alerts.length === 0) return;
+  // useEffect(() => {
+  //   if (alerts.length === 0) return;
 
-    if (seenAlertIds.current.size === 0) {
-      seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
-      return;
-    }
+  //   if (seenAlertIds.current.size === 0) {
+  //     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+  //     return;
+  //   }
 
-    const newAlert = [...alerts]
-      .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
-      .sort((left, right) => {
-        const leftTs = (left.timestamp as any)?.toMillis?.() ?? 0;
-        const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
-        return rightTs - leftTs;
-      })[0];
+  //   const newAlert = [...alerts]
+  //     .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
+  //     .sort((left, right) => {
+  //       const leftTs = (left.timestamp as any)?.toMillis?.() ?? 0;
+  //       const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
+  //       return rightTs - leftTs;
+  //     })[0];
 
-    if (newAlert) {
-      playAlertSound(newAlert).catch((error) => {
-        console.warn('Failed to play alert sound:', error);
-      });
-    }
+  //   if (newAlert) {
+  //     playAlertSound(newAlert).catch((error) => {
+  //       console.warn('Failed to play alert sound:', error);
+  //     });
+  //   }
 
-    seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
-  }, [alerts]);
+  //   seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
+  // }, [alerts]);
 
   const filtered = alerts.filter(a => {
     if (activeFilter === 'All') return true;
