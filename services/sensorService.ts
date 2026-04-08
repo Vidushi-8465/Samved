@@ -12,6 +12,8 @@ export interface SensorData {
   co?: number;            // Alias used by some dashboard cards
   gasAlert: number;       // 0=safe 1=ch4warn 2=ch4danger 3=cowarn 4=codanger 5=both
   gasWarming: boolean;    // true = sensors still warming up
+  // Water level sensor
+  waterLevel?: number;    // Water level in meters (ultrasonic)
   // Worker vitals
   heartRate: number;      // BPM (0 = no finger)
   spO2: number;           // % (0 = no finger)
@@ -83,6 +85,11 @@ export const SENSOR_THRESHOLDS = {
     dangerMin: 200,
     unit: 'ppm',
   },
+  waterLevel: {
+    warningMin: 1.0,
+    dangerMin: 2.0,
+    unit: 'm',
+  },
   heartRate: {
     warningLow: 60,
     warningHigh: 120,
@@ -106,6 +113,7 @@ export interface SensorStatus {
   overall: SafetyStatus;
   ch4: SafetyStatus;
   h2s: SafetyStatus;
+  waterLevel: SafetyStatus;
   heartRate: SafetyStatus;
   spO2: SafetyStatus;
   fall: SafetyStatus;
@@ -124,6 +132,11 @@ export const getSensorStatus = (sensor: SensorData): SensorStatus => {
   const h2s: SafetyStatus =
     coValue >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
     coValue >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
+
+  // Water level thresholds — meters based
+  const waterLevel: SafetyStatus =
+    sensor.waterLevel && sensor.waterLevel >= SENSOR_THRESHOLDS.waterLevel.dangerMin ? 'danger' :
+    sensor.waterLevel && sensor.waterLevel >= SENSOR_THRESHOLDS.waterLevel.warningMin ? 'warning' : 'safe';
 
   // Heart rate
   const heartRate: SafetyStatus =
@@ -144,12 +157,12 @@ export const getSensorStatus = (sensor: SensorData): SensorStatus => {
   const signal: SafetyStatus =
     sensor.rssi < SENSOR_THRESHOLDS.signal.warningBelow ? 'warning' : 'safe';
 
-  const statuses = [ch4, h2s, heartRate, spO2, fall];
+  const statuses = [ch4, h2s, waterLevel, heartRate, spO2, fall];
   const overall: SafetyStatus =
     statuses.includes('danger') ? 'danger' :
     statuses.includes('warning') ? 'warning' : 'safe';
 
-  return { overall, ch4, h2s, heartRate, spO2, fall, signal };
+  return { overall, ch4, h2s, waterLevel, heartRate, spO2, fall, signal };
 };
 
 export const getSafetyStatus = (sensor: SensorData): SafetyStatus =>
@@ -184,6 +197,7 @@ export const listenToWorkerSensor = (
         co: raw.mq7_ppm ?? 0,
         gasAlert: raw.gas_alert ?? 0,
         gasWarming: raw.gasWarming ?? false,
+        waterLevel: raw.water_level ?? 0,
         heartRate: raw.hr ?? 0,
         spO2: raw.spo2 ?? 0,
         fingerOn: raw.finger ?? 0,
@@ -230,6 +244,7 @@ export const listenToAllSensors = (
             co: raw.mq7_ppm ?? 0,
             gasAlert: raw.gas_alert ?? 0,
             gasWarming: raw.gasWarming ?? false,
+            waterLevel: raw.water_level ?? 0,
             heartRate: raw.hr ?? 0,          // Heart rate
             spO2: raw.spo2 ?? 0,             // SpO2 percentage
             fingerOn: raw.finger ?? 0,       // Finger detection

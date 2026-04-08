@@ -279,7 +279,10 @@ function getZonePolygons(): ZonePolygon[] {
   ];
 }
 
-function buildLeafletHTML(selectedZone: string | null): string {
+function buildLeafletHTML(
+  selectedZone: string | null,
+  focusedManholeId: string | null
+): string {
   const allManholes = SOLAPUR_MANHOLES.map((m) => ({
     id: m.id,
     lat: m.lat,
@@ -402,6 +405,7 @@ function buildLeafletHTML(selectedZone: string | null): string {
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
 <script>
   var SEL = ${JSON.stringify(selectedZone)};
+  var FOCUS_MH = ${JSON.stringify(focusedManholeId)};
   var ZONES = ${JSON.stringify(zonePolygons)};
   var MANHOLES = ${JSON.stringify(allManholes)};
 
@@ -475,23 +479,26 @@ function buildLeafletHTML(selectedZone: string | null): string {
     }).addTo(map);
   });
 
+  var focusedMarker = null;
+
   MANHOLES.forEach(function(m) {
     var zone = ZONES.find(function(z) { return z.id === m.zone; });
     var isVisible = SEL === null || SEL === m.zone;
+    var isFocused = FOCUS_MH !== null && FOCUS_MH === m.id;
     var color = zone ? zone.color : '#1D4ED8';
 
     var icon = L.divIcon({
       html:
         '<div style="' +
-        'width:8px;height:8px;border-radius:999px;' +
+        'width:' + (isFocused ? '14px' : '8px') + ';height:' + (isFocused ? '14px' : '8px') + ';border-radius:999px;' +
         'background:' + color + ';' +
-        'border:1.5px solid #ffffff;' +
+        'border:' + (isFocused ? '2.5px' : '1.5px') + ' solid #ffffff;' +
         'box-shadow:0 2px 5px rgba(0,0,0,.16);' +
         'opacity:' + (isVisible ? '0.95' : '0.18') + ';' +
         '"></div>',
       className: '',
-      iconSize: [8, 8],
-      iconAnchor: [4, 4]
+      iconSize: isFocused ? [14, 14] : [8, 8],
+      iconAnchor: isFocused ? [7, 7] : [4, 4]
     });
 
     var marker = L.marker([m.lat, m.lng], { icon: icon }).addTo(map);
@@ -503,11 +510,20 @@ function buildLeafletHTML(selectedZone: string | null): string {
         '<div style="margin-top:4px;color:#64748B;">' + (zone ? zone.name : m.zone) + '</div>'
       );
 
+      if (isFocused) {
+        focusedMarker = marker;
+      }
+
       marker.on('click', function() {
         msg({ type: 'manhole', id: m.id, zone: m.zone, label: m.label });
       });
     }
   });
+
+  if (focusedMarker) {
+    map.setView(focusedMarker.getLatLng(), 17, { animate: true });
+    focusedMarker.openPopup();
+  }
 
   var legend = document.getElementById('legend');
 
@@ -538,12 +554,14 @@ function buildLeafletHTML(selectedZone: string | null): string {
 
 function SolapurMap({
   selectedZone,
+  focusedManholeId,
   onSelectZone,
 }: {
   selectedZone: string | null;
+  focusedManholeId: string | null;
   onSelectZone: (id: string | null) => void;
 }) {
-  const html = buildLeafletHTML(selectedZone);
+  const html = buildLeafletHTML(selectedZone, focusedManholeId);
 
   const onMsg = React.useCallback((data: string) => {
     try {
@@ -1070,6 +1088,7 @@ export default function ZonesScreen() {
   const { language, workers, sensors, alerts } = useStore();
   const T = getText(language);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [focusedManholeId, setFocusedManholeId] = useState<string | null>(null);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1083,7 +1102,14 @@ export default function ZonesScreen() {
         contentContainerStyle={{ paddingBottom: 80 }}
       >
         <View style={styles.mapCard}>
-          <SolapurMap selectedZone={selectedZone} onSelectZone={setSelectedZone} />
+          <SolapurMap
+            selectedZone={selectedZone}
+            focusedManholeId={focusedManholeId}
+            onSelectZone={(id) => {
+              setSelectedZone(id);
+              setFocusedManholeId(null);
+            }}
+          />
         </View>
 
         <View style={styles.section}>
@@ -1122,7 +1148,10 @@ export default function ZonesScreen() {
                   isSelected && styles.zoneCardSelected,
                   { borderLeftColor: zone.color },
                 ]}
-                onPress={() => setSelectedZone(isSelected ? null : zone.id)}
+                onPress={() => {
+                  setSelectedZone(isSelected ? null : zone.id);
+                  setFocusedManholeId(null);
+                }}
               >
                 <View style={styles.zoneCardHeader}>
                   <View
@@ -1245,7 +1274,16 @@ export default function ZonesScreen() {
                               : Colors.danger;
 
                           return (
-                            <View key={w.id} style={styles.workerRow}>
+                            <TouchableOpacity
+                              key={w.id}
+                              style={styles.workerRow}
+                              onPress={() => {
+                                const mhId = s?.manholeId || null;
+                                setSelectedZone(zone.id);
+                                setFocusedManholeId(mhId);
+                              }}
+                              activeOpacity={0.75}
+                            >
                               <MaterialCommunityIcons
                                 name="account-hard-hat"
                                 size={16}
@@ -1263,7 +1301,7 @@ export default function ZonesScreen() {
                               >
                                 {st}
                               </Text>
-                            </View>
+                            </TouchableOpacity>
                           );
                         })}
                       </>

@@ -14,9 +14,6 @@ import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 const WORKERS = [
   { id: 'w001', name: 'Ramesh Patil', zone: 'north', manhole: 'MH-02', location: 'Ward 2 Main Line' },
   { id: 'w002', name: 'Suresh Jadhav', zone: 'east', manhole: 'MH-05', location: 'Hutatma Chowk' },
-  { id: 'w003', name: 'Priya Shinde', zone: 'south', manhole: 'MH-03', location: 'Akkalkot Road' },
-  { id: 'w004', name: 'Mahesh Kale', zone: 'west', manhole: 'MH-07', location: 'Pandharpur Road' },
-  { id: 'w005', name: 'Anita More', zone: 'central', manhole: 'MH-09', location: 'Mangalwar Peth' },
 ];
 
 const PRESETS = [

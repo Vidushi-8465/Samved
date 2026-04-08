@@ -12,6 +12,17 @@ import { isCriticalAlert, sendCriticalAlertEscalation } from '@/services/emergen
 let seenAlertIds = new Set<string>();
 let escalatedAlertIds = new Set<string>();
 
+const HIDDEN_WORKER_IDS = new Set(['w003', 'w004', 'w005']);
+
+function isHiddenWorker(workerId?: string | null, workerName?: string | null) {
+  return (
+    (workerId ? HIDDEN_WORKER_IDS.has(workerId) : false) ||
+    workerName === 'Priya Shinde' ||
+    workerName === 'Mahesh Kale' ||
+    workerName === 'Anita More'
+  );
+}
+
 async function triggerNotification(alert: Alert) {
   await Notifications.scheduleNotificationAsync({
     content: {
@@ -93,10 +104,15 @@ export const useStore = create<AppState>((set, get) => ({
   setManager: (manager) => set({ manager }),
 
   workers: [],
-  setWorkers: (workers) => set({ workers }),
+  setWorkers: (workers) => set({ workers: workers.filter((worker) => !isHiddenWorker(worker.id, worker.name)) }),
 
   sensors: {},
-  setSensors: (sensors) => set({ sensors }),
+  setSensors: (sensors) => {
+    const visibleSensors = Object.fromEntries(
+      Object.entries(sensors).filter(([workerId]) => !isHiddenWorker(workerId))
+    );
+    set({ sensors: visibleSensors });
+  },
 
   updateSensor: (workerId, data) =>
     set((state) => ({
@@ -123,6 +139,7 @@ export const useStore = create<AppState>((set, get) => ({
           spO2: s.spo2,
           ch4: s.mq4_ppm,
           h2s: s.mq7_ppm,
+          waterLevel: s.water_level,
           rssi: s.rssi,
           lastGpsLat: s.gps_lat,
           lastGpsLng: s.gps_lng,
@@ -144,6 +161,10 @@ export const useStore = create<AppState>((set, get) => ({
           safetyStatus: s.status || 'NORMAL',
           lastUpdated: s.last_seen || Date.now(),
         };
+
+        if (isHiddenWorker(id)) {
+          continue;
+        }
 
         mapped[id] = sensor;
 
@@ -207,7 +228,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   alerts: [],
-  setAlerts: (alerts) => set({ alerts }),
+  setAlerts: (alerts) => set({ alerts: alerts.filter((alert) => !isHiddenWorker(alert.workerId, alert.workerName)) }),
 
   language: 'en',
   setLanguage: (language) => set({ language }),
