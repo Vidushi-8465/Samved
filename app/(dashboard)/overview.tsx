@@ -489,6 +489,13 @@ function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
       st: status?.heartRate ?? 'safe',
     },
     {
+      label: 'Water Level',
+      current: sensor ? `${sensor.waterLevel?.toFixed(2) ?? '—'} m` : 'No data',
+      statusLabel: !sensor ? 'No Data' : status?.waterLevel === 'danger' ? 'Critical' : status?.waterLevel === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${SENSOR_THRESHOLDS.waterLevel.warningMin} m  |  Warning: ${SENSOR_THRESHOLDS.waterLevel.warningMin}-${SENSOR_THRESHOLDS.waterLevel.dangerMin - 0.1} m  |  Danger: ≥ ${SENSOR_THRESHOLDS.waterLevel.dangerMin} m`,
+      st: status?.waterLevel ?? 'safe',
+    },
+    {
       label: 'Fall / SOS',
       current: hasFall ? 'Triggered' : 'Normal',
       statusLabel: hasFall ? 'Danger' : 'Safe',
@@ -609,6 +616,63 @@ const gc = StyleSheet.create({
   note: { fontSize: 10, color: '#94A3B8', fontFamily: 'Poppins_400Regular', marginTop: 4 },
 });
 
+// ── WATER LEVEL TRENDS CARD ───────────────────────────────────
+function WaterTrendCard({ sensor }: { sensor?: SensorData | null }) {
+  const [history, setHistory] = useState(Array(20).fill({ waterLevel: 0 }));
+  useEffect(() => {
+    if (!sensor) return;
+    setHistory(prev => [...prev.slice(1), { waterLevel: sensor.waterLevel || 0 }]);
+  }, [sensor?.lastUpdated]);
+
+  const chartW = Math.min(SCREEN_WIDTH - 80, 400);
+  const chartH = 90;
+  const maxVal = 3; // Max 3 meters for display
+
+  return (
+    <View style={wt.card}>
+      <View style={wt.header}>
+        <Text style={wt.title}>Water Level Trends</Text>
+        <Text style={wt.sub}>Last 20 readings · Depth in meters</Text>
+      </View>
+      <View style={wt.legend}>
+        <View style={wt.legendItem}>
+          <View style={[wt.legendDot, { backgroundColor: '#3498DB' }]} />
+          <Text style={wt.legendText}>Water Level</Text>
+        </View>
+      </View>
+      <View style={[wt.chartArea, { height: chartH + 8 }]}>
+        <View style={wt.yLabels}>
+          <Text style={wt.yLabel}>3.0m</Text>
+          <Text style={wt.yLabel}>1.5m</Text>
+          <Text style={wt.yLabel}>0m</Text>
+        </View>
+        <View style={{ flex: 1, height: chartH, backgroundColor: '#FAFAFA', borderRadius: 4, overflow: 'hidden' }}>
+          {history.map((d, i) => (
+            <View key={i} style={{ position: 'absolute', left: (i / (history.length - 1)) * (chartW - 8), bottom: 0, width: 2, flexDirection: 'column', justifyContent: 'flex-end', height: chartH }}>
+              <View style={{ width: 2, height: Math.max(1, (d.waterLevel / maxVal) * chartH), backgroundColor: '#3498DB80', borderRadius: 1 }} />
+            </View>
+          ))}
+        </View>
+      </View>
+      <Text style={wt.note}>Live data updates every 5 seconds via LoRa</Text>
+    </View>
+  );
+}
+const wt = StyleSheet.create({
+  card: { backgroundColor: '#fff', borderRadius: 8, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  title: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: '#1A202C' },
+  sub: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  legend: { flexDirection: 'row', gap: 12, marginBottom: 8 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 2 },
+  legendText: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  chartArea: { flexDirection: 'row', gap: 6, marginBottom: 6 },
+  yLabels: { width: 32, justifyContent: 'space-between', paddingVertical: 2 },
+  yLabel: { fontSize: 9, color: '#94A3B8', fontFamily: 'Poppins_400Regular', textAlign: 'right' },
+  note: { fontSize: 10, color: '#94A3B8', fontFamily: 'Poppins_400Regular', marginTop: 4 },
+});
+
 // ── PRE-MONITORING CARD ───────────────────────────────────────
 function PreMonitoringCard({ workerId }: { workerId: string }) {
   const [data, setData] = useState<any>(null);
@@ -628,13 +692,14 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
   const vSub    = verdict === 'SAFE' ? 'Normal precautions apply.' : verdict === 'WARNING' ? 'Full protective gear required.' : verdict === 'UNSAFE' ? 'Dangerous gas levels detected.' : 'Switch device to PRE mode and lower into sewer.';
 
   const levels = data ? [
-    { label: 'Level 1', ch4: data.level1_ch4 ?? 0, co: data.level1_co ?? 0 },
-    { label: 'Level 2', ch4: data.level2_ch4 ?? 0, co: data.level2_co ?? 0 },
-    { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0 },
+    { label: 'Level 1', ch4: data.level1_ch4 ?? 0, co: data.level1_co ?? 0, water: data.level1_water ?? 0 },
+    { label: 'Level 2', ch4: data.level2_ch4 ?? 0, co: data.level2_co ?? 0, water: data.level2_water ?? 0 },
+    { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0, water: data.level3_water ?? 0 },
   ] : [];
 
   const ch4Status = (v: number) => v >= 5000 ? 'danger' : v >= 1000 ? 'warning' : 'safe';
   const coStatus  = (v: number) => v >= 200  ? 'danger' : v >= 50   ? 'warning' : 'safe';
+  const waterStatus = (v: number) => v >= SENSOR_THRESHOLDS.waterLevel.dangerMin ? 'danger' : v >= SENSOR_THRESHOLDS.waterLevel.warningMin ? 'warning' : 'safe';
 
   return (
     <View style={pm.card}>
@@ -659,6 +724,7 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
             <Text style={[pm.th, { flex: 1 }]}>DEPTH</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (PPM)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CO (PPM)</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>Water (m)</Text>
           </View>
           {levels.map((lv, i) => (
             <View key={i} style={[pm.tableRow, i % 2 === 1 && { backgroundColor: '#F8FAFC' }]}>
@@ -670,6 +736,10 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
               <View style={[pm.cell, { flex: 1 }]}>
                 <View style={[pm.dot, { backgroundColor: STATUS_COLOR[coStatus(lv.co)] }]} />
                 <Text style={[pm.td, { color: STATUS_COLOR[coStatus(lv.co)] }]}>{lv.co}</Text>
+              </View>
+              <View style={[pm.cell, { flex: 1 }]}>
+                <View style={[pm.dot, { backgroundColor: STATUS_COLOR[waterStatus(lv.water)] }]} />
+                <Text style={[pm.td, { color: STATUS_COLOR[waterStatus(lv.water)] }]}>{lv.water.toFixed(2)}</Text>
               </View>
             </View>
           ))}
@@ -991,7 +1061,7 @@ export default function OverviewScreen() {
       <TouchableOpacity 
         style={{
           position: 'absolute',
-          top: 100,
+          top: 70,
           right: 20,
           backgroundColor: '#9C27B0',
           padding: 12,
@@ -1045,6 +1115,7 @@ export default function OverviewScreen() {
           <EnvCard label="METHANE (CH₄)" value={s ? s.ch4.toFixed(1) : '—'} unit="% LEL" status={st?.ch4 ?? 'safe'} />
           <EnvCard label="CARBON MONOXIDE (CO)" value={s ? s.h2s.toFixed(1) : '—'} unit="ppm" status={st?.h2s ?? 'safe'} />
           <EnvCard label="HYDROGEN SULFIDE (H₂S)" value={s ? String(s.co ?? 0) : '—'} unit="ppm" status={(s?.co ?? 0) > 50 ? 'danger' : (s?.co ?? 0) > 25 ? 'warning' : 'safe'} />
+          <EnvCard label="WATER LEVEL" value={s ? s.waterLevel?.toFixed(2) : '—'} unit="m" status={st?.waterLevel ?? 'safe'} />
           <EnvCard label="OXYGEN (SpO₂)" value={s ? String(s.spO2) : '—'} unit="%" status={st?.spO2 ?? 'safe'} />
           <EnvCard label="HEART RATE" value={s ? String(s.heartRate) : '—'} unit="bpm" status={st?.heartRate ?? 'safe'} />
         </ScrollView>
@@ -1055,6 +1126,7 @@ export default function OverviewScreen() {
             <View style={main.col1}>
               <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
               <GasTrendCard sensor={activeSensor} />
+              <WaterTrendCard sensor={activeSensor} />
             </View>
             <View style={main.col2}>
               <WorkerConditionCard
@@ -1102,6 +1174,7 @@ export default function OverviewScreen() {
             />
             <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
+            <WaterTrendCard sensor={activeSensor} />
             <AlertsLogCard alerts={alerts} />
             <ThresholdCard sensor={activeSensor} />
             <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />

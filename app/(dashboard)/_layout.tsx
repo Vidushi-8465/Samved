@@ -28,6 +28,10 @@ const TAB_ROUTES = [
 const { width } = Dimensions.get('window');
 const TAB_WIDTH = width / TAB_ROUTES.length;
 
+// Lower threshold = more responsive swipe
+const SWIPE_THRESHOLD = 50;
+const SWIPE_VELOCITY_THRESHOLD = 0.3;
+
 function TabIcon({ name, focused, color }: any) {
   return (
     <View style={[styles.tabIcon, focused && styles.tabIconActive]}>
@@ -44,11 +48,18 @@ export default function DashboardLayout() {
 
   const [checking, setChecking] = useState(true);
 
-  // 🔥 Animated indicator
   const indicatorX = useRef(new Animated.Value(0)).current;
 
   const currentRoute = pathname.split('/').pop() || 'overview';
   const currentIdx = TAB_ROUTES.findIndex((route) => route.key === currentRoute);
+
+  // ✅ KEY FIX: Keep a ref that always holds the latest index.
+  // PanResponder is created once (useRef) so its closure never updates —
+  // reading currentIdxRef.current inside it always gives the fresh value.
+  const currentIdxRef = useRef(currentIdx);
+  useEffect(() => {
+    currentIdxRef.current = currentIdx;
+  }, [currentIdx]);
 
   // Animate indicator on tab change
   useEffect(() => {
@@ -56,6 +67,8 @@ export default function DashboardLayout() {
       Animated.spring(indicatorX, {
         toValue: currentIdx * TAB_WIDTH,
         useNativeDriver: true,
+        tension: 80,   // snappier spring
+        friction: 10,
       }).start();
     }
   }, [currentIdx]);
@@ -66,7 +79,6 @@ export default function DashboardLayout() {
       setChecking(false);
       return;
     }
-
     restoreSession().then((profile) => {
       if (profile) {
         setManager(profile);
@@ -78,22 +90,29 @@ export default function DashboardLayout() {
     });
   }, []);
 
-  // ✅ Improved swipe logic
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return Math.abs(gestureState.dx) > 20 && Math.abs(gestureState.dy) < 10;
+      // ✅ Only claim the gesture when it's clearly horizontal
+      onMoveShouldSetPanResponder: (_, { dx, dy, vx }) => {
+        const isHorizontal = Math.abs(dx) > Math.abs(dy) * 2;
+        const hasMoved = Math.abs(dx) > 10;
+        return isHorizontal && hasMoved;
       },
 
-      onPanResponderRelease: (_, gestureState) => {
-        const threshold = 60;
+      onPanResponderTerminationRequest: () => false, // don't let others steal
 
-        if (currentIdx === -1) return;
+      onPanResponderRelease: (_, { dx, vx }) => {
+        // ✅ Read from ref — always the current tab index
+        const idx = currentIdxRef.current;
+        if (idx === -1) return;
 
-        if (gestureState.dx > threshold && currentIdx > 0) {
-          router.replace(TAB_ROUTES[currentIdx - 1].path);
-        } else if (gestureState.dx < -threshold && currentIdx < TAB_ROUTES.length - 1) {
-          router.replace(TAB_ROUTES[currentIdx + 1].path);
+        const swipedLeft = dx < -SWIPE_THRESHOLD || vx < -SWIPE_VELOCITY_THRESHOLD;
+        const swipedRight = dx > SWIPE_THRESHOLD || vx > SWIPE_VELOCITY_THRESHOLD;
+
+        if (swipedLeft && idx < TAB_ROUTES.length - 1) {
+          router.replace(TAB_ROUTES[idx + 1].path);
+        } else if (swipedRight && idx > 0) {
+          router.replace(TAB_ROUTES[idx - 1].path);
         }
       },
     })
@@ -112,7 +131,6 @@ export default function DashboardLayout() {
 
   return (
     <View style={styles.container}>
-      {/* 🔥 Swipe Area */}
       <View style={{ flex: 1 }} {...panResponder.panHandlers}>
         <Tabs
           screenOptions={{
@@ -190,7 +208,7 @@ export default function DashboardLayout() {
         </Tabs>
       </View>
 
-      {/* 🔥 Animated Indicator */}
+      {/* Animated tab indicator */}
       <Animated.View
         style={[
           styles.indicator,
@@ -242,7 +260,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,107,0,0.12)',
   },
 
-  // 🔥 Indicator style
   indicator: {
     position: 'absolute',
     bottom: 0,

@@ -453,6 +453,8 @@ function buildLeafletHTML(
     }).addTo(map);
   });
 
+  var focusedMarker = null;
+
   MANHOLES.forEach(function(m) {
     var zone     = ZONES.find(function(z){ return z.id === m.zone; });
     var isActive = SEL === null || SEL === m.zone;
