@@ -777,7 +777,7 @@ function WeatherAnalysisPanel() {
             size={20}
             color={Colors.primary}
           />
-          <Text style={wx.title}>Weather + AI Safety Analysis</Text>
+          <Text style={wx.title}>Weather</Text>
         </View>
 
         <TouchableOpacity onPress={fetchWeather} style={wx.refreshBtn}>
@@ -785,7 +785,7 @@ function WeatherAnalysisPanel() {
         </TouchableOpacity>
       </View>
 
-      <Text style={wx.sub}>Solapur, Maharashtra · Open-Meteo (free)</Text>
+     
 
       {loading && (
         <View style={wx.loadingRow}>

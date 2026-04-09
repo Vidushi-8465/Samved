@@ -8,20 +8,28 @@ import * as Notifications from 'expo-notifications';
 import { AppState as RNAppState } from 'react-native';
 import { playAlertSound } from '@/utils/alertSound';
 import { isCriticalAlert, sendCriticalAlertEscalation } from '@/services/emergencyService';
+import { isHiddenWorker } from '@/constants/hiddenWorkers';
 
 let seenAlertIds = new Set<string>();
 let escalatedAlertIds = new Set<string>();
 
-const HIDDEN_WORKER_IDS = new Set(['w003', 'w004', 'w005']);
+const toBool = (value: unknown): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+  }
+  return false;
+};
 
-function isHiddenWorker(workerId?: string | null, workerName?: string | null) {
-  return (
-    (workerId ? HIDDEN_WORKER_IDS.has(workerId) : false) ||
-    workerName === 'Priya Shinde' ||
-    workerName === 'Mahesh Kale' ||
-    workerName === 'Anita More'
-  );
-}
+const readSosTriggered = (raw: any): boolean =>
+  toBool(raw?.sos) ||
+  toBool(raw?.sos_button) ||
+  toBool(raw?.sos_pressed) ||
+  toBool(raw?.sos_triggered) ||
+  toBool(raw?.panic) ||
+  toBool(raw?.panic_button);
 
 async function triggerNotification(alert: Alert) {
   await Notifications.scheduleNotificationAsync({
@@ -144,7 +152,7 @@ export const useStore = create<AppState>((set, get) => ({
           lastGpsLat: s.gps_lat,
           lastGpsLng: s.gps_lng,
           fallDetected: s.fall,
-          sosTriggered: s.sos,
+          sosTriggered: readSosTriggered(s),
           workerPosture: s.posture,
           mode: s.mode,
           manholeId: s.manhole_id,
@@ -156,7 +164,7 @@ export const useStore = create<AppState>((set, get) => ({
           fingerOn: s.fingerOn || false,
           motionAlert: s.motionAlert || false,
           fallAlert: s.fallAlert || false,
-          sosAlert: s.sosAlert || false,
+          sosAlert: toBool(s.sosAlert) || readSosTriggered(s),
           batteryLevel: s.batteryLevel || 100,
           safetyStatus: s.status || 'NORMAL',
           lastUpdated: s.last_seen || Date.now(),

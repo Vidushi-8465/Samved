@@ -18,6 +18,7 @@ import { logoutManager } from '@/services/authService';
 import { ref, onValue, off } from 'firebase/database';
 import { rtdb } from '@/services/firebase';
 import { playAlertSound } from '@/utils/alertSound';
+import { isHiddenWorker } from '@/constants/hiddenWorkers';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
@@ -40,6 +41,11 @@ const STATUS_TEXT: Record<SafetyStatus, string> = {
   danger: '#C0392B',
   offline: '#64748B',
 };
+
+function normalizeWaterCm(value?: number | null): number {
+  if (value == null || Number.isNaN(value)) return 0;
+  return value;
+}
 
 function useRealTimeClock() {
   const [now, setNow] = useState(new Date());
@@ -490,9 +496,9 @@ function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
     },
     {
       label: 'Water Level',
-      current: sensor ? `${sensor.waterLevel?.toFixed(2) ?? '—'} m` : 'No data',
+      current: sensor ? `${normalizeWaterCm(sensor.waterLevel).toFixed(0)} cm` : 'No data',
       statusLabel: !sensor ? 'No Data' : status?.waterLevel === 'danger' ? 'Critical' : status?.waterLevel === 'warning' ? 'Warning' : 'Safe',
-      limits: `Safe: < ${SENSOR_THRESHOLDS.waterLevel.warningMin} m  |  Warning: ${SENSOR_THRESHOLDS.waterLevel.warningMin}-${SENSOR_THRESHOLDS.waterLevel.dangerMin - 0.1} m  |  Danger: ≥ ${SENSOR_THRESHOLDS.waterLevel.dangerMin} m`,
+      limits: `Danger: 0-${SENSOR_THRESHOLDS.waterLevel.dangerMax} cm  |  Warning: ${SENSOR_THRESHOLDS.waterLevel.dangerMax + 1}-${SENSOR_THRESHOLDS.waterLevel.warningMax} cm  |  Safe: > ${SENSOR_THRESHOLDS.waterLevel.warningMax} cm`,
       st: status?.waterLevel ?? 'safe',
     },
     {
@@ -621,18 +627,18 @@ function WaterTrendCard({ sensor }: { sensor?: SensorData | null }) {
   const [history, setHistory] = useState(Array(20).fill({ waterLevel: 0 }));
   useEffect(() => {
     if (!sensor) return;
-    setHistory(prev => [...prev.slice(1), { waterLevel: sensor.waterLevel || 0 }]);
+    setHistory(prev => [...prev.slice(1), { waterLevel: normalizeWaterCm(sensor.waterLevel || 0) }]);
   }, [sensor?.lastUpdated]);
 
   const chartW = Math.min(SCREEN_WIDTH - 80, 400);
   const chartH = 90;
-  const maxVal = 3; // Max 3 meters for display
+  const maxVal = 300; // Max 300 cm for display
 
   return (
     <View style={wt.card}>
       <View style={wt.header}>
         <Text style={wt.title}>Water Level Trends</Text>
-        <Text style={wt.sub}>Last 20 readings · Depth in meters</Text>
+        <Text style={wt.sub}>Last 20 readings · Depth in cm</Text>
       </View>
       <View style={wt.legend}>
         <View style={wt.legendItem}>
@@ -642,9 +648,9 @@ function WaterTrendCard({ sensor }: { sensor?: SensorData | null }) {
       </View>
       <View style={[wt.chartArea, { height: chartH + 8 }]}>
         <View style={wt.yLabels}>
-          <Text style={wt.yLabel}>3.0m</Text>
-          <Text style={wt.yLabel}>1.5m</Text>
-          <Text style={wt.yLabel}>0m</Text>
+          <Text style={wt.yLabel}>300 cm</Text>
+          <Text style={wt.yLabel}>150 cm</Text>
+          <Text style={wt.yLabel}>0 cm</Text>
         </View>
         <View style={{ flex: 1, height: chartH, backgroundColor: '#FAFAFA', borderRadius: 4, overflow: 'hidden' }}>
           {history.map((d, i) => (
@@ -697,9 +703,12 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
     { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0, water: data.level3_water ?? 0 },
   ] : [];
 
-  const ch4Status = (v: number) => v >= 5000 ? 'danger' : v >= 1000 ? 'warning' : 'safe';
+  const ch4Status = (v: number) => v >= 200 ? 'danger' : v >= 100 ? 'warning' : 'safe';
   const coStatus  = (v: number) => v >= 200  ? 'danger' : v >= 50   ? 'warning' : 'safe';
-  const waterStatus = (v: number) => v >= SENSOR_THRESHOLDS.waterLevel.dangerMin ? 'danger' : v >= SENSOR_THRESHOLDS.waterLevel.warningMin ? 'warning' : 'safe';
+  const waterStatus = (v: number) => {
+    const distanceCm = normalizeWaterCm(v);
+    return distanceCm <= SENSOR_THRESHOLDS.waterLevel.dangerMax ? 'danger' : distanceCm <= SENSOR_THRESHOLDS.waterLevel.warningMax ? 'warning' : 'safe';
+  };
 
   return (
     <View style={pm.card}>
@@ -724,7 +733,7 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
             <Text style={[pm.th, { flex: 1 }]}>DEPTH</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (PPM)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CO (PPM)</Text>
-            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>Water (m)</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>Water (cm)</Text>
           </View>
           {levels.map((lv, i) => (
             <View key={i} style={[pm.tableRow, i % 2 === 1 && { backgroundColor: '#F8FAFC' }]}>
@@ -739,7 +748,7 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
               </View>
               <View style={[pm.cell, { flex: 1 }]}>
                 <View style={[pm.dot, { backgroundColor: STATUS_COLOR[waterStatus(lv.water)] }]} />
-                <Text style={[pm.td, { color: STATUS_COLOR[waterStatus(lv.water)] }]}>{lv.water.toFixed(2)}</Text>
+                <Text style={[pm.td, { color: STATUS_COLOR[waterStatus(lv.water)] }]}>{normalizeWaterCm(lv.water).toFixed(0)}</Text>
               </View>
             </View>
           ))}
@@ -792,16 +801,18 @@ export default function OverviewScreen() {
   useEffect(() => {
     if (!manager) return;
     const unsubWorkers = listenToWorkers(manager.uid, (w) => {
-      setWorkers(w);
-      if (w.length > 0) {
-        listenToAllSensors(w.map(wk => wk.id), setSensors);
-        setSelectedWorkerId(prev => prev || w[0].id);
+      const visibleWorkers = w.filter((worker) => !isHiddenWorker(worker.id, worker.name));
+      setWorkers(visibleWorkers);
+      if (visibleWorkers.length > 0) {
+        listenToAllSensors(visibleWorkers.map((wk) => wk.id), setSensors);
+        setSelectedWorkerId((prev) => prev || visibleWorkers[0].id);
       }
     });
     const zones = manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map(z => z.id);
     const unsubAlerts = listenToAlerts(zones, (a) => {
-      setAlerts(a);
-      if (a.some(al => (al.type === 'SOS' || al.type === 'FALL') && !al.resolved)) setShowSOS(true);
+      const visibleAlerts = a.filter((alert) => !isHiddenWorker(alert.workerId, alert.workerName));
+      setAlerts(visibleAlerts);
+      if (visibleAlerts.some(al => (al.type === 'SOS' || al.type === 'FALL') && !al.resolved)) setShowSOS(true);
     });
     return () => { unsubWorkers(); unsubAlerts(); };
   }, [manager]);
@@ -1115,7 +1126,6 @@ export default function OverviewScreen() {
           <EnvCard label="METHANE (CH₄)" value={s ? s.ch4.toFixed(1) : '—'} unit="% LEL" status={st?.ch4 ?? 'safe'} />
           <EnvCard label="CARBON MONOXIDE (CO)" value={s ? s.h2s.toFixed(1) : '—'} unit="ppm" status={st?.h2s ?? 'safe'} />
           <EnvCard label="HYDROGEN SULFIDE (H₂S)" value={s ? String(s.co ?? 0) : '—'} unit="ppm" status={(s?.co ?? 0) > 50 ? 'danger' : (s?.co ?? 0) > 25 ? 'warning' : 'safe'} />
-          <EnvCard label="WATER LEVEL" value={s ? s.waterLevel?.toFixed(2) : '—'} unit="m" status={st?.waterLevel ?? 'safe'} />
           <EnvCard label="OXYGEN (SpO₂)" value={s ? String(s.spO2) : '—'} unit="%" status={st?.spO2 ?? 'safe'} />
           <EnvCard label="HEART RATE" value={s ? String(s.heartRate) : '—'} unit="bpm" status={st?.heartRate ?? 'safe'} />
         </ScrollView>

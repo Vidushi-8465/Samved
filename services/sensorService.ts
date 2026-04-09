@@ -3,6 +3,24 @@ import { ref, onValue, off, DataSnapshot } from 'firebase/database';
 import { collection, onSnapshot, query, where, orderBy, limit, doc, updateDoc, Timestamp } from 'firebase/firestore';
 import { rtdb, db } from './firebase';
 
+const toBool = (value: unknown): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+  }
+  return false;
+};
+
+const readSosTriggered = (raw: any): boolean =>
+  toBool(raw?.sos) ||
+  toBool(raw?.sos_button) ||
+  toBool(raw?.sos_pressed) ||
+  toBool(raw?.sos_triggered) ||
+  toBool(raw?.panic) ||
+  toBool(raw?.panic_button);
+
 // ── Sensor Data — matches exactly what receiver pushes ────────
 export interface SensorData {
   workerId: string;
@@ -86,9 +104,9 @@ export const SENSOR_THRESHOLDS = {
     unit: 'ppm',
   },
   waterLevel: {
-    warningMin: 1.0,
-    dangerMin: 2.0,
-    unit: 'm',
+    dangerMax: 10,
+    warningMax: 50,
+    unit: 'cm',
   },
   heartRate: {
     warningLow: 60,
@@ -122,6 +140,7 @@ export interface SensorStatus {
 
 export const getSensorStatus = (sensor: SensorData): SensorStatus => {
   const coValue = sensor.co ?? sensor.h2s;
+  const waterDistanceCm = sensor.waterLevel ?? 0;
 
   // CH4 (MQ4) thresholds — PPM based
   const ch4: SafetyStatus =
@@ -133,10 +152,10 @@ export const getSensorStatus = (sensor: SensorData): SensorStatus => {
     coValue >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
     coValue >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
 
-  // Water level thresholds — meters based
+  // Water distance thresholds — smaller distance means higher risk
   const waterLevel: SafetyStatus =
-    sensor.waterLevel && sensor.waterLevel >= SENSOR_THRESHOLDS.waterLevel.dangerMin ? 'danger' :
-    sensor.waterLevel && sensor.waterLevel >= SENSOR_THRESHOLDS.waterLevel.warningMin ? 'warning' : 'safe';
+    waterDistanceCm <= SENSOR_THRESHOLDS.waterLevel.dangerMax ? 'danger' :
+    waterDistanceCm <= SENSOR_THRESHOLDS.waterLevel.warningMax ? 'warning' : 'safe';
 
   // Heart rate
   const heartRate: SafetyStatus =
@@ -204,7 +223,7 @@ export const listenToWorkerSensor = (
         motionAlert: raw.motion_alert ?? 0,
         fallDetected: raw.fall ?? false,
         workerPosture: raw.posture ?? 'standing',
-        sosTriggered: raw.sos ?? false,
+        sosTriggered: readSosTriggered(raw),
         rssi: raw.rssi ?? -100,
         manholeId: raw.manhole_id ?? '—',
         zone: raw.zone ?? '—',
@@ -251,7 +270,7 @@ export const listenToAllSensors = (
             motionAlert: raw.motion_alert ?? 0,
             fallDetected: raw.fall ?? false,
             workerPosture: raw.posture ?? 'standing',
-            sosTriggered: raw.sos ?? false,
+            sosTriggered: readSosTriggered(raw),
             rssi: raw.rssi ?? -100,
             manholeId: raw.manhole_id ?? '—',
             zone: raw.zone ?? '—',
@@ -299,7 +318,8 @@ export const listenToWorkers = (
 
 export const listenToAlerts = (
   zones: string[],
-  callback: (alerts: Alert[]) => void
+  callback: (alerts: Alert[]) => void,
+  maxResults: number | null = 50
 ) => {
   // Firestore requires a composite index for "in" + "orderBy" queries.
   // To avoid requiring manual index creation, we fetch the matching documents
@@ -318,12 +338,14 @@ export const listenToAlerts = (
           const aTs = (a.timestamp as any)?.toMillis?.() ?? 0;
           const bTs = (b.timestamp as any)?.toMillis?.() ?? 0;
           return bTs - aTs;
-        })
-        .slice(0, 50);
+        });
+      const visibleAlerts = typeof maxResults === 'number' && maxResults > 0
+        ? alerts.slice(0, maxResults)
+        : alerts;
       console.log('📡 Alerts from Firestore:', alerts.length);
-      console.log('Resolved count:', alerts.filter(a => a.resolved).length);
-      console.log('Unresolved count:', alerts.filter(a => !a.resolved).length);
-      callback(alerts);
+      console.log('Resolved count:', visibleAlerts.filter(a => a.resolved).length);
+      console.log('Unresolved count:', visibleAlerts.filter(a => !a.resolved).length);
+      callback(visibleAlerts);
     },
     (error) => {
       console.error('❌ listenToAlerts ERROR:', error);

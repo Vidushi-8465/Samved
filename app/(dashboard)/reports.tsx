@@ -19,10 +19,11 @@ import Svg, { Rect, Line, Text as SvgText, Circle, Path, Defs, LinearGradient, S
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
-import { listenToWorkers, listenToAlerts, listenToAllSensors, SOLAPUR_ZONES, SensorData, WorkerProfile, Alert as LiveAlert } from '@/services/sensorService';
+import { listenToWorkers, listenToAlerts, listenToAllSensors, SOLAPUR_ZONES, SensorData, WorkerProfile, Alert as LiveAlert, getSensorStatus } from '@/services/sensorService';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import { isHiddenWorker } from '@/constants/hiddenWorkers';
 
 const SCREEN_W = Dimensions.get('window').width;
 
@@ -36,16 +37,6 @@ type ReportAlert = {
   type: string;
   value: string;
   resolved: boolean;
-  timestamp: any;
-};
-
-type PremonitoringReading = {
-  workerId: string;
-  workerName?: string;
-  zone?: string;
-  heartRate?: number | null;
-  spo2?: number | null;
-  temperature?: number | null;
   timestamp: any;
 };
 
@@ -113,6 +104,10 @@ function avg(values: (number | null | undefined)[]): number | null {
 
 function formatVal(val: number | null | undefined, unit: string): string {
   return val == null ? 'N/A' : `${val}${unit}`;
+}
+
+function formatCm(val: number | null | undefined): string {
+  return val == null || Number.isNaN(val) ? 'N/A' : `${val.toFixed(1)} cm`;
 }
 
 // ─── Trend helpers ────────────────────────────────────────────────────────────
@@ -340,12 +335,6 @@ function buildAnalysisPrompt(p: {
   resolvedAlerts: number;
   resolutionRate: number;
   alertsByType: { label: string; count: number }[];
-  premonitoringStats: {
-    avgHeartRate: number | null;
-    avgSpo2: number | null;
-    avgTemperature: number | null;
-    readingsCount: number;
-  };
   overallGas: {
     avgCh4: number | null;
     avgH2s: number | null;
@@ -366,7 +355,6 @@ function buildAnalysisPrompt(p: {
   workersCount: number;
 }): string {
   const g = p.overallGas;
-  const pm = p.premonitoringStats;
 
   return `
 You are a safety analyst for sewer workers. Provide concise, actionable insights.
@@ -380,11 +368,6 @@ Total=${p.totalAlerts}
 Resolved=${p.resolvedAlerts}
 Resolution=${p.resolutionRate}%
 Breakdown: ${p.alertsByType.map(a => `${a.label}:${a.count}`).join(", ")}
-
-VITALS (${pm.readingsCount} readings):
-Heart Rate: ${pm.avgHeartRate ?? "N/A"} bpm (safe 60-100)
-SpO2: ${pm.avgSpo2 ?? "N/A"}% (safe >95%)
-Temperature: ${pm.avgTemperature ?? "N/A"}°C (safe 36-37.5)
 
 GAS CONCENTRATIONS:
 CH4: ${g.avgCh4 ?? "N/A"} ppm (>200 danger)
@@ -401,13 +384,45 @@ ${p.gasStats
 Provide sections:
 OVERALL SAFETY ASSESSMENT
 CRITICAL RISKS
-WORKER HEALTH OBSERVATIONS
 ZONE CONCERNS
 RECOMMENDED ACTIONS (top 3)
 TREND OUTLOOK
 
 Keep under 300 words. Be specific with numbers.
 `;
+}
+
+function LiveWorkerCard({ worker, sensor }: { worker: WorkerProfile; sensor?: SensorData | null }) {
+  const status = sensor ? getSensorStatus(sensor) : null;
+  const overall = status?.overall ?? 'offline';
+  const isActive = !!sensor;
+  const bg = overall === 'danger' ? Colors.dangerBg : overall === 'warning' ? Colors.warningBg : overall === 'safe' ? Colors.successBg : Colors.background;
+  const color = overall === 'danger' ? Colors.danger : overall === 'warning' ? Colors.warning : overall === 'safe' ? Colors.success : Colors.textMuted;
+
+  return (
+    <View style={styles.liveWorkerCard}>
+      <View style={styles.liveWorkerHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.liveWorkerName}>{worker.name}</Text>
+          <Text style={styles.liveWorkerMeta}>{worker.employeeId} · {worker.zone}</Text>
+        </View>
+        <View style={[styles.liveStatusPill, { backgroundColor: bg }]}>
+          <Text style={[styles.liveStatusText, { color }]}>{isActive ? overall.toUpperCase() : 'OFFLINE'}</Text>
+        </View>
+      </View>
+
+      <View style={styles.liveWorkerGrid}>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>HR</Text><Text style={[styles.liveMetricValue, { color }]}>{sensor?.heartRate ?? '—'}</Text></View>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>SpO₂</Text><Text style={[styles.liveMetricValue, { color }]}>{sensor?.spO2 ?? '—'}</Text></View>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>CH₄</Text><Text style={[styles.liveMetricValue, { color }]}>{sensor?.ch4 ?? '—'}</Text></View>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>H₂S</Text><Text style={[styles.liveMetricValue, { color }]}>{sensor?.h2s ?? '—'}</Text></View>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>Water</Text><Text style={[styles.liveMetricValue, { color }]}>{formatCm(sensor?.waterLevel)}</Text></View>
+        <View style={styles.liveMetric}><Text style={styles.liveMetricLabel}>RSSI</Text><Text style={[styles.liveMetricValue, { color }]}>{sensor?.rssi != null ? `${sensor.rssi} dBm` : '—'}</Text></View>
+      </View>
+
+      <Text style={styles.liveWorkerFooter}>{sensor ? `${sensor.manholeId ?? '—'} · ${sensor.locationLabel ?? '—'}` : 'No live sensor data'}</Text>
+    </View>
+  );
 }
 
 // ─── Report builders ──────────────────────────────────────────────────────────
@@ -418,7 +433,6 @@ interface ReportParams {
   alertsByType: { label: string; count: number }[];
   zoneRows: { name: string; workers: number; alerts: number; resolvedRate: number }[];
   recentAlerts: ReportAlert[];
-  premonitoringStats: { avgHeartRate: number | null; avgSpo2: number | null; avgTemperature: number | null; readingsCount: number };
   gasStats: { zone: string; sewerLine: string; avgCh4: number | null; avgH2s: number | null; avgCo: number | null; avgO2: number | null; avgNh3: number | null; readingsCount: number }[];
   overallGas: { avgCh4: number | null; avgH2s: number | null; avgCo: number | null; avgO2: number | null; avgNh3: number | null };
   aiAnalysis?: string;
@@ -428,7 +442,6 @@ function buildReportHtml(p: ReportParams): string {
   const now = new Date().toLocaleString('en-IN');
   const pl = p.period.charAt(0).toUpperCase() + p.period.slice(1);
   const g = p.overallGas;
-  const pm = p.premonitoringStats;
 
   const summaryCards = [
     { label: 'Total Workers', value: p.workersCount },
@@ -464,12 +477,6 @@ table{width:100%;border-collapse:collapse;font-size:12px;}th,td{border-bottom:1p
 <h2>Summary</h2><div class="grid">${summaryCards}</div>
 <h2>Alert Breakdown</h2><ul>${p.alertsByType.map((a) => `<li><span>${esc(a.label)}</span><strong>${a.count}</strong></li>`).join('')}</ul>
 <h2>Zone Performance</h2><ul>${p.zoneRows.map((z) => `<li><span>${esc(z.name)}</span><span>${z.workers} workers · ${z.alerts} alerts · ${z.resolvedRate}% resolved</span></li>`).join('')}</ul>
-<h2>Pre-Monitoring Vitals (${pm.readingsCount} readings)</h2>
-<div class="grid">
-  <div class="card"><div class="cardLabel">Avg Heart Rate</div><div class="cardValue">${formatVal(pm.avgHeartRate, ' bpm')}</div></div>
-  <div class="card"><div class="cardLabel">Avg SpO\u2082</div><div class="cardValue">${formatVal(pm.avgSpo2, '%')}</div></div>
-  <div class="card"><div class="cardLabel">Avg Temperature</div><div class="cardValue">${formatVal(pm.avgTemperature, '\u00b0C')}</div></div>
-</div>
 <h2>Overall Gas Concentration</h2>
 <div class="grid">
   <div class="card"><div class="cardLabel">CH\u2084</div><div class="cardValue">${formatVal(g.avgCh4, ' ppm')}</div></div>
@@ -481,7 +488,7 @@ table{width:100%;border-collapse:collapse;font-size:12px;}th,td{border-bottom:1p
 <h2>Gas by Zone / Sewer Line (ppm, O\u2082 in %)</h2>
 <table><thead><tr><th>Zone</th><th>Sewer Line</th><th>CH\u2084</th><th>H\u2082S</th><th>CO</th><th>O\u2082</th><th>NH\u2083</th><th>Readings</th></tr></thead><tbody>${gasZoneRows}</tbody></table>
 ${aiSection}
-<h2>Recent Alerts (up to 20)</h2>
+<h2>Alert Logs (All Workers)</h2>
 <table><thead><tr><th>Time</th><th>Worker</th><th>Zone</th><th>Type</th><th>Value</th><th>Status</th></tr></thead><tbody>${alertRows}</tbody></table>
 <div class="footer">SMC LiveMonitor &copy; ${new Date().getFullYear()} \u2014 Solapur Municipal Corporation</div>
 </body></html>`;
@@ -509,12 +516,6 @@ function buildReportCsv(p: ReportParams): string {
   lines.push('Zone,Workers,Alerts,Resolution Rate');
   p.zoneRows.forEach((z) => lines.push(`${csvCell(z.name)},${z.workers},${z.alerts},${z.resolvedRate}%`));
   lines.push('');
-  lines.push('PRE-MONITORING VITALS');
-  lines.push(`Heart Rate (bpm),${p.premonitoringStats.avgHeartRate ?? 'N/A'}`);
-  lines.push(`SpO2 (%),${p.premonitoringStats.avgSpo2 ?? 'N/A'}`);
-  lines.push(`Temperature (C),${p.premonitoringStats.avgTemperature ?? 'N/A'}`);
-  lines.push(`Readings Count,${p.premonitoringStats.readingsCount}`);
-  lines.push('');
   lines.push('OVERALL GAS');
   lines.push(`CH4 (ppm),${p.overallGas.avgCh4 ?? 'N/A'}`);
   lines.push(`H2S (ppm),${p.overallGas.avgH2s ?? 'N/A'}`);
@@ -533,7 +534,7 @@ function buildReportCsv(p: ReportParams): string {
     lines.push(csvCell(p.aiAnalysis));
   }
   lines.push('');
-  lines.push('RECENT ALERTS');
+  lines.push('ALERT LOGS (ALL WORKERS)');
   lines.push('Time,Worker,Zone,Type,Value,Status');
   p.recentAlerts.forEach((a) => {
     lines.push([
@@ -824,6 +825,10 @@ export default function ReportsScreen() {
   };
 
   const selectedGasCfg = GAS_CONFIG.find((g) => g.key === selectedGas)!;
+  const liveWorkerRows = useMemo(
+    () => effectiveWorkers.map((worker) => ({ worker, sensor: effectiveSensors[worker.id] ?? null })),
+    [effectiveWorkers, effectiveSensors]
+  );
 
   // ──────────────────────────────────────────────────────────────────────────────
 
@@ -880,6 +885,21 @@ export default function ReportsScreen() {
               </View>
             ))}
           </View>
+        </View>
+
+        {/* Live Values by Worker */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>👷 Live Values by Worker</Text>
+          <Text style={styles.cardSub}>Current sensor snapshot for each worker</Text>
+          {liveWorkerRows.length > 0 ? (
+            <View style={{ gap: Spacing.sm }}>
+              {liveWorkerRows.map(({ worker, sensor }) => (
+                <LiveWorkerCard key={worker.id} worker={worker} sensor={sensor} />
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.cardSub}>No worker sensor data available.</Text>
+          )}
         </View>
 
         {/* Alert Trend */}
@@ -1131,6 +1151,17 @@ const styles = StyleSheet.create({
   summaryItem:       { width: '47%', backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, gap: 4 },
   summaryValue:      { fontSize: 22, fontFamily: 'Poppins_700Bold' },
   summaryLabel:      { fontSize: 11, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary },
+  liveWorkerCard:    { backgroundColor: Colors.background, borderRadius: BorderRadius.md, padding: Spacing.md, gap: 10 },
+  liveWorkerHeader:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  liveWorkerName:     { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: Colors.textPrimary },
+  liveWorkerMeta:     { fontSize: 11, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary, marginTop: 2 },
+  liveStatusPill:     { paddingHorizontal: 10, paddingVertical: 4, borderRadius: BorderRadius.full },
+  liveStatusText:     { fontSize: 10, fontFamily: 'Poppins_700Bold' },
+  liveWorkerGrid:     { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  liveMetric:         { width: '31%', backgroundColor: Colors.white, borderRadius: BorderRadius.sm, padding: 8, gap: 2, borderWidth: 1, borderColor: Colors.border },
+  liveMetricLabel:    { fontSize: 9, fontFamily: 'Poppins_600SemiBold', color: Colors.textSecondary },
+  liveMetricValue:    { fontSize: 13, fontFamily: 'Poppins_700Bold' },
+  liveWorkerFooter:   { fontSize: 11, fontFamily: 'Poppins_400Regular', color: Colors.textSecondary },
   alertRow:          { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: Colors.border },
   alertRowLabel:     { fontSize: 13, fontFamily: 'Poppins_400Regular', color: Colors.textPrimary, width: 72 },
   alertBarTrack:     { flex: 1, height: 6, backgroundColor: Colors.background, borderRadius: 3, overflow: 'hidden' },
