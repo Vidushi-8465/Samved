@@ -1,4 +1,7 @@
 // app/(dashboard)/reports.tsx
+// SMC LiveMonitor — Reports Screen (complete rewrite)
+// ─────────────────────────────────────────────────────
+
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
@@ -12,6 +15,7 @@ import {
   Modal,
   Pressable,
   Dimensions,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -42,9 +46,9 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 
-const SCREEN_W = Dimensions.get('window').width;
+const { width: SCREEN_W } = Dimensions.get('window');
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────────
 
 type Period = 'today' | 'week' | 'month';
 
@@ -65,10 +69,11 @@ type GasReading = {
   co?: number | null;
   o2?: number | null;
   nh3?: number | null;
+  waterLevel?: number | null;
   timestamp: any;
 };
 
-type PremonitoringReading = {
+type VitalReading = {
   workerId: string;
   workerName: string;
   zone: string;
@@ -78,66 +83,100 @@ type PremonitoringReading = {
   timestamp: any;
 };
 
-// ─── Gas config ───────────────────────────────────────────────────────────────
+// Level 1–3 gas thresholds (safe / caution / danger)
+type GasCfg = {
+  key: string;
+  label: string;
+  unit: string;
+  color: string;
+  l1: number; // safe → caution threshold
+  l2: number; // caution → danger threshold
+  l3: number; // display max
+};
 
-const GAS_CONFIG = [
-  { key: 'ch4', label: 'CH₄', unit: 'ppm', color: '#F97316', safeMax: 1000, dangerAt: 5000 },
-  { key: 'h2s', label: 'H₂S', unit: 'ppm', color: '#DC2626', safeMax: 1, dangerAt: 5 },
-  { key: 'co', label: 'CO', unit: 'ppm', color: '#6B7280', safeMax: 25, dangerAt: 200 },
-  { key: 'o2', label: 'O₂', unit: '%', color: '#16A34A', safeMax: 23.5, dangerAt: 19.5 },
-  { key: 'nh3', label: 'NH₃', unit: 'ppm', color: '#7C3AED', safeMax: 25, dangerAt: 300 },
-] as const;
+const GAS_CONFIG: GasCfg[] = [
+  { key: 'co',  label: 'CO',  unit: 'ppm', color: '#6B7280', l1: 25,   l2: 200,  l3: 400  },
+  { key: 'ch4', label: 'CH₄', unit: 'ppm', color: '#F97316', l1: 1000, l2: 5000, l3: 8000 },
+];
 
-type GasKey = (typeof GAS_CONFIG)[number]['key'];
+const VITAL_THRESHOLDS = {
+  heartRate: { l1: 60, l2: 100, l3: 150 }, // normal 60-100 bpm
+  spo2:      { l1: 95, l2: 90,  l3: 85  }, // normal ≥95%  (lower = worse)
+};
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function timestampToDate(ts: any): Date | null {
   if (!ts) return null;
   if (ts?.toDate) return ts.toDate();
   if (ts instanceof Date) return ts;
-  if (typeof ts === 'number') {
-    return new Date(ts < 1_000_000_000_000 ? ts * 1000 : ts);
-  }
+  if (typeof ts === 'number') return new Date(ts < 1_000_000_000_000 ? ts * 1000 : ts);
   return new Date(ts);
 }
 
 function getPeriodStart(period: Period): Date {
   const now = new Date();
   if (period === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
   if (period === 'week') {
     const s = new Date(now);
     s.setDate(now.getDate() - 6);
     s.setHours(0, 0, 0, 0);
     return s;
   }
-
   return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
 function isInPeriod(ts: any, period: Period): boolean {
   if (ts == null) return true;
   const d = timestampToDate(ts);
-  if (!d || Number.isNaN(d.getTime())) return true;
+  if (!d || isNaN(d.getTime())) return true;
   return d >= getPeriodStart(period);
 }
 
-function avg(values: (number | null | undefined)[]): number | null {
-  const v = values.filter((x): x is number => x != null && !isNaN(x) && x > 0);
-  if (!v.length) return null;
-  return Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10;
+function avg(vals: (number | null | undefined)[]): number | null {
+  const v = vals.filter((x): x is number => x != null && !isNaN(x) && x > 0);
+  return v.length ? Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 : null;
 }
 
-function formatVal(val: number | null | undefined, unit: string): string {
+function fmtVal(val: number | null | undefined, unit: string): string {
   return val == null ? 'N/A' : `${val}${unit}`;
 }
 
-function formatCm(val: number | null | undefined): string {
-  return val == null || Number.isNaN(val) ? 'N/A' : `${val.toFixed(1)} cm`;
+function fmtCm(val: number | null | undefined): string {
+  return val == null || isNaN(val as number) ? 'N/A' : `${(val as number).toFixed(1)} cm`;
 }
 
-// ─── Trend helpers ────────────────────────────────────────────────────────────
+/** Returns 'safe' | 'caution' | 'danger' for a gas value */
+function gasLevel(key: string, val: number | null): 'safe' | 'caution' | 'danger' | 'na' {
+  if (val == null) return 'na';
+  const cfg = GAS_CONFIG.find(g => g.key === key);
+  if (!cfg) return 'na';
+  if (key === 'o2') {
+    // O2: higher is safer
+    if (val >= cfg.l1) return 'safe';
+    if (val >= cfg.l2) return 'caution';
+    return 'danger';
+  }
+  if (val <= cfg.l1) return 'safe';
+  if (val <= cfg.l2) return 'caution';
+  return 'danger';
+}
+
+const LEVEL_COLORS = {
+  safe:    '#16A34A',
+  caution: '#F59E0B',
+  danger:  '#DC2626',
+  na:      '#CBD5E1',
+};
+
+const LEVEL_BG = {
+  safe:    '#F0FDF4',
+  caution: '#FFFBEB',
+  danger:  '#FEF2F2',
+  na:      '#F8FAFC',
+};
+
+// ─── Trend helpers ─────────────────────────────────────────────────────────────
 
 function getPeriodBuckets(period: Period): string[] {
   if (period === 'today') return ['12a', '4a', '8a', '12p', '4p', '8p'];
@@ -155,28 +194,22 @@ function getAlertTrend(alerts: ReportAlert[], period: Period) {
   const labels = getPeriodBuckets(period);
   const buckets = new Array(labels.length).fill(0);
   const now = new Date();
-
-  alerts.forEach((a) => {
+  alerts.forEach(a => {
     const d = timestampToDate(a.timestamp) ?? now;
     buckets[getBucketIndex(d, period)] += 1;
   });
-
   return labels.map((label, i) => ({ label, value: buckets[i] }));
 }
 
-function getGasTrend(readings: GasReading[], gasKey: GasKey, period: Period) {
+function getGasTrend(readings: GasReading[], gasKey: string, period: Period) {
   const labels = getPeriodBuckets(period);
   const buckets: number[][] = labels.map(() => []);
   const now = new Date();
-
-  readings.forEach((r) => {
+  readings.forEach(r => {
     const d = timestampToDate(r.timestamp) ?? now;
-    const val = r[gasKey];
-    if (val != null && val > 0) {
-      buckets[getBucketIndex(d, period)].push(val as number);
-    }
+    const val = (r as any)[gasKey];
+    if (val != null && val > 0) buckets[getBucketIndex(d, period)].push(val as number);
   });
-
   return labels.map((label, i) => ({
     label,
     value: buckets[i].length
@@ -185,7 +218,7 @@ function getGasTrend(readings: GasReading[], gasKey: GasKey, period: Period) {
   }));
 }
 
-// ─── CSV / HTML helpers ───────────────────────────────────────────────────────
+// ─── CSV / HTML helpers ────────────────────────────────────────────────────────
 
 function csvCell(v: unknown): string {
   const t = String(v ?? '');
@@ -200,111 +233,79 @@ function esc(v: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
-// ─── SVG Bar Chart ────────────────────────────────────────────────────────────
+// ─── SVG: Animated Bar Chart ───────────────────────────────────────────────────
 
-function BarChart({
-  data,
-  color,
-  height = 120,
-}: {
+function BarChart({ data, color, height = 130 }: {
   data: { label: string; value: number }[];
   color: string;
   height?: number;
 }) {
   const W = SCREEN_W - Spacing.md * 2 - 32;
-  const PAD = { top: 20, bottom: 28, left: 28, right: 8 };
+  const PAD = { top: 20, bottom: 30, left: 32, right: 8 };
   const chartW = W - PAD.left - PAD.right;
   const chartH = height - PAD.top - PAD.bottom;
-  const max = Math.max(...data.map((d) => d.value), 1);
-  const barW = Math.max(chartW / data.length - 6, 4);
+  const max = Math.max(...data.map(d => d.value), 1);
+  const barW = Math.max(chartW / data.length - 8, 4);
+
+  const gradId = `barGrad${color.replace('#', '')}`;
 
   return (
     <Svg width={W} height={height}>
-      <Line
-        x1={PAD.left}
-        y1={PAD.top}
-        x2={PAD.left}
-        y2={PAD.top + chartH}
-        stroke="#E2E8F0"
-        strokeWidth={1}
-      />
-      <Line
-        x1={PAD.left}
-        y1={PAD.top + chartH}
-        x2={PAD.left + chartW}
-        y2={PAD.top + chartH}
-        stroke="#E2E8F0"
-        strokeWidth={1}
-      />
+      <Defs>
+        <LinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor={color} stopOpacity="1" />
+          <Stop offset="1" stopColor={color} stopOpacity="0.4" />
+        </LinearGradient>
+      </Defs>
 
-      {data.map((d, i) => {
-        const x =
-          PAD.left + (i * chartW) / data.length + (chartW / data.length - barW) / 2;
-        const barH = Math.max((d.value / max) * chartH, d.value > 0 ? 3 : 0);
-        const y = PAD.top + chartH - barH;
-
+      {/* Grid lines */}
+      {[0, 0.5, 1].map(t => {
+        const y = PAD.top + t * chartH;
         return (
-          <React.Fragment key={d.label}>
-            <Rect x={x} y={y} width={barW} height={barH} rx={3} fill={color} opacity={0.85} />
-            {d.value > 0 && (
-              <SvgText
-                x={x + barW / 2}
-                y={y - 4}
-                fontSize={8}
-                fill="#64748B"
-                textAnchor="middle"
-              >
-                {d.value}
-              </SvgText>
-            )}
-            <SvgText
-              x={x + barW / 2}
-              y={PAD.top + chartH + 14}
-              fontSize={8}
-              fill="#94A3B8"
-              textAnchor="middle"
-            >
-              {d.label}
+          <React.Fragment key={t}>
+            <Line x1={PAD.left} y1={y} x2={PAD.left + chartW} y2={y} stroke="#F1F5F9" strokeWidth={1} />
+            <SvgText x={PAD.left - 4} y={y + 3} fontSize={8} fill="#CBD5E1" textAnchor="end">
+              {Math.round(max * (1 - t))}
             </SvgText>
           </React.Fragment>
         );
       })}
 
-      <SvgText
-        x={PAD.left - 2}
-        y={PAD.top + 4}
-        fontSize={8}
-        fill="#94A3B8"
-        textAnchor="end"
-      >
-        {max}
-      </SvgText>
+      {data.map((d, i) => {
+        const x = PAD.left + (i * chartW) / data.length + (chartW / data.length - barW) / 2;
+        const barH = Math.max((d.value / max) * chartH, d.value > 0 ? 4 : 0);
+        const y = PAD.top + chartH - barH;
+        return (
+          <React.Fragment key={d.label}>
+            <Rect x={x} y={y} width={barW} height={barH} rx={4} fill={`url(#${gradId})`} />
+            {d.value > 0 && (
+              <SvgText x={x + barW / 2} y={y - 5} fontSize={8} fill="#64748B" textAnchor="middle" fontWeight="600">
+                {d.value}
+              </SvgText>
+            )}
+            <SvgText x={x + barW / 2} y={PAD.top + chartH + 16} fontSize={8} fill="#94A3B8" textAnchor="middle">
+              {d.label}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
     </Svg>
   );
 }
 
-// ─── SVG Line Chart ───────────────────────────────────────────────────────────
+// ─── SVG: Colour-coded Line Chart (with threshold bands) ──────────────────────
 
-function LineChart({
-  data,
-  color,
-  safeMax,
-  dangerAt,
-  height = 130,
-}: {
+function GasLineChart({ data, cfg, height = 150 }: {
   data: { label: string; value: number | null }[];
-  color: string;
-  unit: string;
-  safeMax: number;
-  dangerAt: number;
+  cfg: GasCfg;
   height?: number;
 }) {
   const W = SCREEN_W - Spacing.md * 2 - 32;
-  const PAD = { top: 24, bottom: 28, left: 36, right: 12 };
+  const PAD = { top: 28, bottom: 30, left: 38, right: 14 };
   const chartW = W - PAD.left - PAD.right;
   const chartH = height - PAD.top - PAD.bottom;
 
-  const validVals = data.map((d) => d.value).filter((v): v is number => v != null);
+  const validVals = data.map(d => d.value).filter((v): v is number => v != null);
   if (!validVals.length) {
     return (
       <View style={{ height, alignItems: 'center', justifyContent: 'center' }}>
@@ -313,7 +314,7 @@ function LineChart({
     );
   }
 
-  const rawMax = Math.max(...validVals, safeMax * 1.1);
+  const rawMax = Math.max(...validVals, cfg.l2 * 1.2);
   const rawMin = Math.min(...validVals, 0);
   const range = rawMax - rawMin || 1;
 
@@ -321,198 +322,300 @@ function LineChart({
   const toX = (i: number) => PAD.left + (i / Math.max(data.length - 1, 1)) * chartW;
 
   const points = data
-    .map((d, i) => (d.value != null ? { x: toX(i), y: toY(d.value) } : null))
-    .filter(Boolean) as { x: number; y: number }[];
+    .map((d, i) => (d.value != null ? { x: toX(i), y: toY(d.value), val: d.value } : null))
+    .filter(Boolean) as { x: number; y: number; val: number }[];
 
-  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const areaD =
-    pathD +
-    (points.length
-      ? ` L ${points[points.length - 1].x} ${PAD.top + chartH} L ${points[0].x} ${
-          PAD.top + chartH
-        } Z`
-      : '');
-
-  const safeY = toY(Math.min(safeMax, rawMax));
-  const dangerY = toY(Math.min(dangerAt, rawMax));
-  const gradId = `grad${color.replace('#', '')}`;
+  const l1Y = toY(Math.min(cfg.l1, rawMax));
+  const l2Y = toY(Math.min(cfg.l2, rawMax));
 
   return (
     <Svg width={W} height={height}>
       <Defs>
-        <LinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0" stopColor={color} stopOpacity="0.25" />
-          <Stop offset="1" stopColor={color} stopOpacity="0.02" />
+        <LinearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#3B82F6" stopOpacity="0.15" />
+          <Stop offset="1" stopColor="#3B82F6" stopOpacity="0.01" />
         </LinearGradient>
       </Defs>
 
-      {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+      {/* Threshold bands */}
+      {l1Y > PAD.top && l1Y < PAD.top + chartH && (
+        <Rect x={PAD.left} y={l1Y} width={chartW} height={PAD.top + chartH - l1Y}
+          fill="#F0FDF4" opacity={0.5} />
+      )}
+      {l2Y > PAD.top && l2Y < PAD.top + chartH && (
+        <Rect x={PAD.left} y={l2Y} width={chartW}
+          height={Math.max(0, l1Y - l2Y)} fill="#FFFBEB" opacity={0.5} />
+      )}
+
+      {/* Grid */}
+      {[0, 0.25, 0.5, 0.75, 1].map(t => {
         const y = PAD.top + t * chartH;
         return (
           <React.Fragment key={t}>
-            <Line
-              x1={PAD.left}
-              y1={y}
-              x2={PAD.left + chartW}
-              y2={y}
-              stroke="#F1F5F9"
-              strokeWidth={1}
-            />
-            <SvgText
-              x={PAD.left - 3}
-              y={y + 3}
-              fontSize={7}
-              fill="#CBD5E1"
-              textAnchor="end"
-            >
+            <Line x1={PAD.left} y1={y} x2={PAD.left + chartW} y2={y} stroke="#F1F5F9" strokeWidth={1} />
+            <SvgText x={PAD.left - 4} y={y + 3} fontSize={7} fill="#CBD5E1" textAnchor="end">
               {Math.round(rawMax - t * range)}
             </SvgText>
           </React.Fragment>
         );
       })}
 
-      {safeY > PAD.top && safeY < PAD.top + chartH && (
-        <Line
-          x1={PAD.left}
-          y1={safeY}
-          x2={PAD.left + chartW}
-          y2={safeY}
-          stroke="#16A34A"
-          strokeWidth={1}
-          strokeDasharray="4,3"
-        />
+      {/* Level lines */}
+      {l1Y > PAD.top && l1Y < PAD.top + chartH && (
+        <>
+          <Line x1={PAD.left} y1={l1Y} x2={PAD.left + chartW} y2={l1Y}
+            stroke="#16A34A" strokeWidth={1} strokeDasharray="5,3" />
+          <SvgText x={PAD.left + chartW - 2} y={l1Y - 3} fontSize={7} fill="#16A34A" textAnchor="end">
+            L1 safe
+          </SvgText>
+        </>
+      )}
+      {l2Y > PAD.top && l2Y < PAD.top + chartH && (
+        <>
+          <Line x1={PAD.left} y1={l2Y} x2={PAD.left + chartW} y2={l2Y}
+            stroke="#F59E0B" strokeWidth={1} strokeDasharray="5,3" />
+          <SvgText x={PAD.left + chartW - 2} y={l2Y - 3} fontSize={7} fill="#F59E0B" textAnchor="end">
+            L2 caution
+          </SvgText>
+        </>
       )}
 
-      {dangerY > PAD.top && dangerY < PAD.top + chartH && (
-        <Line
-          x1={PAD.left}
-          y1={dangerY}
-          x2={PAD.left + chartW}
-          y2={dangerY}
-          stroke="#DC2626"
-          strokeWidth={1}
-          strokeDasharray="4,3"
-        />
-      )}
+      {/* Segments coloured by level */}
+      {points.map((p, i) => {
+        if (i === 0) return null;
+        const prev = points[i - 1];
+        const lvl = gasLevel(cfg.key, p.val);
+        return (
+          <Line key={i} x1={prev.x} y1={prev.y} x2={p.x} y2={p.y}
+            stroke={LEVEL_COLORS[lvl]} strokeWidth={2.5} strokeLinecap="round" />
+        );
+      })}
 
-      <Path d={areaD} fill={`url(#${gradId})`} />
-      <Path
-        d={pathD}
-        stroke={color}
-        strokeWidth={2}
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      {/* Dots */}
+      {points.map((p, i) => {
+        const lvl = gasLevel(cfg.key, p.val);
+        return (
+          <Circle key={i} cx={p.x} cy={p.y} r={4} fill={LEVEL_COLORS[lvl]}
+            stroke="white" strokeWidth={1.5} />
+        );
+      })}
 
-      {points.map((p, i) => (
-        <Circle key={i} cx={p.x} cy={p.y} r={3} fill={color} stroke="white" strokeWidth={1.5} />
-      ))}
-
+      {/* X labels */}
       {data.map((d, i) => (
-        <SvgText
-          key={d.label}
-          x={toX(i)}
-          y={PAD.top + chartH + 14}
-          fontSize={8}
-          fill="#94A3B8"
-          textAnchor="middle"
-        >
+        <SvgText key={d.label} x={toX(i)} y={PAD.top + chartH + 16}
+          fontSize={8} fill="#94A3B8" textAnchor="middle">
           {d.label}
         </SvgText>
       ))}
-
-      {safeY > PAD.top && safeY < PAD.top + chartH && (
-        <SvgText
-          x={PAD.left + chartW}
-          y={safeY - 3}
-          fontSize={7}
-          fill="#16A34A"
-          textAnchor="end"
-        >
-          safe
-        </SvgText>
-      )}
-
-      {dangerY > PAD.top && dangerY < PAD.top + chartH && (
-        <SvgText
-          x={PAD.left + chartW}
-          y={dangerY - 3}
-          fontSize={7}
-          fill="#DC2626"
-          textAnchor="end"
-        >
-          danger
-        </SvgText>
-      )}
     </Svg>
   );
 }
 
-// ─── Radial Gauge ─────────────────────────────────────────────────────────────
+// ─── SVG: Semi-circular Gauge with arrow ──────────────────────────────────────
 
-function GaugeChart({
-  value,
-  max,
-  color,
-  label,
-  unit,
-}: {
+function SemiGauge({ value, cfg, size = 120 }: {
   value: number | null;
-  max: number;
-  color: string;
-  label: string;
-  unit: string;
+  cfg: GasCfg;
+  size?: number;
 }) {
-  const SIZE = 84;
-  const R = 30;
-  const cx = SIZE / 2;
-  const cy = SIZE / 2;
-  const pct = value != null ? Math.min(Math.max(value / max, 0), 1) : 0;
+  const cx = size / 2;
+  const cy = size * 0.62;
+  const R = size * 0.38;
+  const strokeW = size * 0.09;
 
+  // Arc helpers (from -180° to 0°, i.e. left to right semicircle)
   const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const arcPt = (deg: number) => ({
+    x: cx + R * Math.cos(toRad(deg)),
+    y: cy + R * Math.sin(toRad(deg)),
+  });
 
-  const arcPath = (from: number, to: number) => {
-    const large = Math.abs(to - from) > 180 ? 1 : 0;
-    return `M ${cx + R * Math.cos(toRad(from))} ${cy + R * Math.sin(
-      toRad(from)
-    )} A ${R} ${R} 0 ${large} 1 ${cx + R * Math.cos(toRad(to))} ${
-      cy + R * Math.sin(toRad(to))
-    }`;
+  const describeArc = (startDeg: number, endDeg: number) => {
+    const s = arcPt(startDeg);
+    const e = arcPt(endDeg);
+    const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+    return `M ${s.x} ${s.y} A ${R} ${R} 0 ${large} 1 ${e.x} ${e.y}`;
   };
 
-  const fillEnd = -210 + 240 * pct;
+  // 3 colour segments: -180 → -120 (green), -120 → -60 (yellow), -60 → 0 (red)
+  const START = -180;
+  const MID1  = -120;
+  const MID2  = -60;
+  const END   = 0;
+
+  // For O2 (inverted), map differently
+  const isInverted = cfg.key === 'o2';
+
+  // Map value to angle
+  let pct = 0;
+  if (value != null) {
+    pct = Math.min(Math.max((value - 0) / (cfg.l3 - 0), 0), 1);
+    if (isInverted) pct = 1 - pct;
+  }
+  const needleDeg = START + pct * 180;
+  const needlePt = arcPt(needleDeg);
+
+  const lvl = gasLevel(cfg.key, value);
 
   return (
-    <View style={{ alignItems: 'center', width: SIZE + 8 }}>
-      <Svg width={SIZE} height={SIZE}>
-        <Path d={arcPath(-210, 30)} stroke="#E2E8F0" strokeWidth={6} fill="none" strokeLinecap="round" />
+    <View style={{ alignItems: 'center', width: size + 8 }}>
+      <Svg width={size} height={size * 0.72}>
+        {/* Background arc segments */}
+        <Path d={describeArc(START, MID1)} stroke={isInverted ? '#DC2626' : '#16A34A'}
+          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
+        <Path d={describeArc(MID1, MID2)} stroke="#F59E0B"
+          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
+        <Path d={describeArc(MID2, END)} stroke={isInverted ? '#16A34A' : '#DC2626'}
+          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
+
+        {/* Filled portion */}
         {value != null && pct > 0 && (
-          <Path d={arcPath(-210, fillEnd)} stroke={color} strokeWidth={6} fill="none" strokeLinecap="round" />
+          <Path d={describeArc(START, needleDeg)}
+            stroke={LEVEL_COLORS[lvl]} strokeWidth={strokeW} fill="none" strokeLinecap="butt" />
         )}
-        <SvgText
-          x={cx}
-          y={cy + 4}
-          fontSize={11}
-          fontWeight="bold"
-          fill={value != null ? color : '#CBD5E1'}
-          textAnchor="middle"
-        >
-          {value ?? '—'}
+
+        {/* Needle arrow */}
+        {value != null && (
+          <>
+            <Line x1={cx} y1={cy} x2={needlePt.x} y2={needlePt.y}
+              stroke={LEVEL_COLORS[lvl]} strokeWidth={2.5} strokeLinecap="round" />
+            <Circle cx={cx} cy={cy} r={5} fill={LEVEL_COLORS[lvl]} />
+            {/* Arrow head */}
+            <Circle cx={needlePt.x} cy={needlePt.y} r={3.5} fill={LEVEL_COLORS[lvl]} />
+          </>
+        )}
+
+        {/* Value text */}
+        <SvgText x={cx} y={cy + 16} fontSize={13} fontWeight="bold"
+          fill={value != null ? LEVEL_COLORS[lvl] : '#CBD5E1'} textAnchor="middle">
+          {value != null ? `${value}` : '—'}
         </SvgText>
-        <SvgText x={cx} y={cy + 14} fontSize={7} fill="#94A3B8" textAnchor="middle">
-          {unit}
+        <SvgText x={cx} y={cy + 27} fontSize={8} fill="#94A3B8" textAnchor="middle">
+          {cfg.unit}
         </SvgText>
       </Svg>
-      <Text style={{ fontSize: 10, color: '#64748B', marginTop: -4 }}>{label}</Text>
+
+      {/* Level badge */}
+      <View style={[styles.gaugeBadge, { backgroundColor: LEVEL_BG[lvl] }]}>
+        <View style={[styles.gaugeDot, { backgroundColor: LEVEL_COLORS[lvl] }]} />
+        <Text style={[styles.gaugeBadgeText, { color: LEVEL_COLORS[lvl] }]}>
+          {lvl === 'na' ? '—' : lvl.toUpperCase()}
+        </Text>
+      </View>
+      <Text style={styles.gaugeLabel}>{cfg.label}</Text>
     </View>
   );
 }
 
-function LiveWorkerCard({
-  worker,
-  sensor,
-}: {
+// ─── Water Level indicator ─────────────────────────────────────────────────────
+
+function WaterLevelBar({ value, maxCm = 200 }: { value: number | null; maxCm?: number }) {
+  const pct = value != null ? Math.min(value / maxCm, 1) : 0;
+  const color = value == null ? '#CBD5E1'
+    : value < 50  ? LEVEL_COLORS.safe
+    : value < 120 ? LEVEL_COLORS.caution
+    : LEVEL_COLORS.danger;
+  return (
+    <View style={styles.waterBarWrap}>
+      <View style={styles.waterBarTrack}>
+        <View style={[styles.waterBarFill, { height: `${pct * 100}%`, backgroundColor: color }]} />
+      </View>
+      <Text style={[styles.waterBarValue, { color }]}>{fmtCm(value)}</Text>
+    </View>
+  );
+}
+
+// ─── Pre-monitoring Level Card (L1/L2/L3) ─────────────────────────────────────
+
+function GasLevelCard({ gasKey, readings }: {
+  gasKey: string;
+  readings: GasReading[];
+}) {
+  const cfg = GAS_CONFIG.find(g => g.key === gasKey)!;
+  const vals = readings.map(r => (r as any)[gasKey] as number | null).filter((v): v is number => v != null && v > 0);
+  const current = vals.length ? vals[vals.length - 1] : null;
+  const avgVal = avg(vals);
+  const maxVal = vals.length ? Math.max(...vals) : null;
+
+  const l1Count = vals.filter(v => gasLevel(gasKey, v) === 'safe').length;
+  const l2Count = vals.filter(v => gasLevel(gasKey, v) === 'caution').length;
+  const l3Count = vals.filter(v => gasLevel(gasKey, v) === 'danger').length;
+  const total = vals.length || 1;
+
+  const currentLvl = gasLevel(gasKey, current);
+
+  return (
+    <View style={[styles.gasLevelCard, { borderLeftColor: LEVEL_COLORS[currentLvl] }]}>
+      <View style={styles.gasLevelHeader}>
+        <View style={[styles.gasLevelBadge, { backgroundColor: LEVEL_BG[currentLvl] }]}>
+          <Text style={[styles.gasLevelBadgeText, { color: LEVEL_COLORS[currentLvl] }]}>
+            {cfg.label}
+          </Text>
+        </View>
+        <Text style={[styles.gasCurrentVal, { color: LEVEL_COLORS[currentLvl] }]}>
+          {current != null ? `${current} ${cfg.unit}` : 'N/A'}
+        </Text>
+      </View>
+
+      <View style={styles.gasLevelBars}>
+        {/* L1 safe */}
+        <View style={styles.gasLevelRow}>
+          <Text style={styles.gasLevelLbl}>L1 Safe</Text>
+          <View style={styles.gasLevelTrack}>
+            <View style={[styles.gasLevelFill, {
+              width: `${(l1Count / total) * 100}%`,
+              backgroundColor: LEVEL_COLORS.safe,
+            }]} />
+          </View>
+          <Text style={[styles.gasLevelCount, { color: LEVEL_COLORS.safe }]}>{l1Count}</Text>
+        </View>
+        {/* L2 caution */}
+        <View style={styles.gasLevelRow}>
+          <Text style={styles.gasLevelLbl}>L2 Caution</Text>
+          <View style={styles.gasLevelTrack}>
+            <View style={[styles.gasLevelFill, {
+              width: `${(l2Count / total) * 100}%`,
+              backgroundColor: LEVEL_COLORS.caution,
+            }]} />
+          </View>
+          <Text style={[styles.gasLevelCount, { color: LEVEL_COLORS.caution }]}>{l2Count}</Text>
+        </View>
+        {/* L3 danger */}
+        <View style={styles.gasLevelRow}>
+          <Text style={styles.gasLevelLbl}>L3 Danger</Text>
+          <View style={styles.gasLevelTrack}>
+            <View style={[styles.gasLevelFill, {
+              width: `${(l3Count / total) * 100}%`,
+              backgroundColor: LEVEL_COLORS.danger,
+            }]} />
+          </View>
+          <Text style={[styles.gasLevelCount, { color: LEVEL_COLORS.danger }]}>{l3Count}</Text>
+        </View>
+      </View>
+
+      <View style={styles.gasStatRow}>
+        <View style={styles.gasStat}>
+          <Text style={styles.gasStatLbl}>Avg</Text>
+          <Text style={styles.gasStatVal}>{avgVal != null ? `${avgVal}` : '—'}</Text>
+        </View>
+        <View style={styles.gasStat}>
+          <Text style={styles.gasStatLbl}>Max</Text>
+          <Text style={[styles.gasStatVal, maxVal != null && maxVal > cfg.l2 ? { color: LEVEL_COLORS.danger } : {}]}>
+            {maxVal != null ? `${maxVal}` : '—'}
+          </Text>
+        </View>
+        <View style={styles.gasStat}>
+          <Text style={styles.gasStatLbl}>Unit</Text>
+          <Text style={styles.gasStatVal}>{cfg.unit}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Live Worker Card ──────────────────────────────────────────────────────────
+
+function LiveWorkerCard({ worker, sensor }: {
   worker: WorkerProfile;
   sensor?: SensorData | null;
 }) {
@@ -520,78 +623,62 @@ function LiveWorkerCard({
   const overall = status?.overall ?? 'offline';
   const isActive = !!sensor;
 
-  const bg =
-    overall === 'danger'
-      ? Colors.dangerBg
-      : overall === 'warning'
-      ? Colors.warningBg
-      : overall === 'safe'
-      ? Colors.successBg
-      : Colors.background;
+  const stateColor = overall === 'danger' ? Colors.danger
+    : overall === 'warning' ? Colors.warning
+    : overall === 'safe'    ? Colors.success
+    : Colors.textMuted;
 
-  const color =
-    overall === 'danger'
-      ? Colors.danger
-      : overall === 'warning'
-      ? Colors.warning
-      : overall === 'safe'
-      ? Colors.success
-      : Colors.textMuted;
+  const stateBg = overall === 'danger' ? Colors.dangerBg
+    : overall === 'warning' ? Colors.warningBg
+    : overall === 'safe'    ? Colors.successBg
+    : Colors.background;
+
+  const metrics = [
+    { label: 'HR',    value: sensor?.heartRate ? `${sensor.heartRate} bpm` : '—', icon: 'heart-pulse',   lvl: sensor?.heartRate ? (sensor.heartRate < 60 || sensor.heartRate > 100 ? 'caution' : 'safe') : 'na' },
+    { label: 'SpO₂', value: sensor?.spO2       ? `${sensor.spO2}%`         : '—', icon: 'lungs',         lvl: sensor?.spO2 ? (sensor.spO2 < 90 ? 'danger' : sensor.spO2 < 95 ? 'caution' : 'safe') : 'na' },
+    { label: 'CH₄',  value: sensor?.ch4        ? `${sensor.ch4} ppm`       : '—', icon: 'fire',          lvl: gasLevel('ch4', sensor?.ch4 ?? null) },
+    { label: 'CO',   value: (sensor as any)?.co ? `${(sensor as any).co} ppm` : '—', icon: 'cloud-outline', lvl: gasLevel('co', (sensor as any)?.co ?? null) },
+    { label: 'Water',value: fmtCm(sensor?.waterLevel),                               icon: 'water',         lvl: sensor?.waterLevel != null ? (sensor.waterLevel > 120 ? 'danger' : sensor.waterLevel > 50 ? 'caution' : 'safe') : 'na' },
+  ] as const;
 
   return (
-    <View style={styles.liveWorkerCard}>
-      <View style={styles.liveWorkerHeader}>
+    <View style={[styles.liveWorkerCard, { borderLeftColor: stateColor, borderLeftWidth: 3 }]}>
+      <View style={styles.liveWorkerTop}>
         <View style={{ flex: 1 }}>
           <Text style={styles.liveWorkerName}>{worker.name}</Text>
-          <Text style={styles.liveWorkerMeta}>
-            {worker.employeeId} · {worker.zone}
-          </Text>
+          <Text style={styles.liveWorkerMeta}>{worker.employeeId} · {worker.zone}</Text>
         </View>
-
-        <View style={[styles.liveStatusPill, { backgroundColor: bg }]}>
-          <Text style={[styles.liveStatusText, { color }]}>
+        <View style={[styles.statusPill, { backgroundColor: stateBg }]}>
+          <View style={[styles.statusDot, { backgroundColor: stateColor }]} />
+          <Text style={[styles.statusPillText, { color: stateColor }]}>
             {isActive ? overall.toUpperCase() : 'OFFLINE'}
           </Text>
         </View>
       </View>
 
-      <View style={styles.liveWorkerGrid}>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>HR</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>{sensor?.heartRate ?? '—'}</Text>
-        </View>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>SpO₂</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>{sensor?.spO2 ?? '—'}</Text>
-        </View>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>CH₄</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>{sensor?.ch4 ?? '—'}</Text>
-        </View>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>H₂S</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>{sensor?.h2s ?? '—'}</Text>
-        </View>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>Water</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>{formatCm(sensor?.waterLevel)}</Text>
-        </View>
-        <View style={styles.liveMetric}>
-          <Text style={styles.liveMetricLabel}>RSSI</Text>
-          <Text style={[styles.liveMetricValue, { color }]}>
-            {sensor?.rssi != null ? `${sensor.rssi} dBm` : '—'}
-          </Text>
-        </View>
+      <View style={styles.metricsGrid}>
+        {metrics.map((m, i) => (
+          <View key={i} style={[styles.metricCell, { backgroundColor: LEVEL_BG[m.lvl as keyof typeof LEVEL_BG] }]}>
+            <MaterialCommunityIcons name={m.icon as any} size={14} color={LEVEL_COLORS[m.lvl as keyof typeof LEVEL_COLORS]} />
+            <Text style={styles.metricCellLabel}>{m.label}</Text>
+            <Text style={[styles.metricCellValue, { color: LEVEL_COLORS[m.lvl as keyof typeof LEVEL_COLORS] }]}>
+              {m.value}
+            </Text>
+          </View>
+        ))}
       </View>
 
-      <Text style={styles.liveWorkerFooter}>
-        {sensor ? `${sensor.manholeId ?? '—'} · ${sensor.locationLabel ?? '—'}` : 'No live sensor data'}
-      </Text>
+      {sensor && (
+        <Text style={styles.liveWorkerFooter}>
+          📍 {sensor.manholeId ?? '—'} · {sensor.locationLabel ?? '—'}
+          {'  '}RSSI: {sensor.rssi != null ? `${sensor.rssi} dBm` : '—'}
+        </Text>
+      )}
     </View>
   );
 }
 
-// ─── Report builders ──────────────────────────────────────────────────────────
+// ─── Report builders ───────────────────────────────────────────────────────────
 
 interface ReportParams {
   period: Period;
@@ -632,38 +719,30 @@ function buildReportHtml(p: ReportParams): string {
     { label: 'Total Alerts', value: p.totalAlerts },
     { label: 'Resolved', value: p.resolvedAlerts },
     { label: 'Resolution Rate', value: `${p.resolutionRate}%` },
-  ]
-    .map(
-      (c) =>
-        `<div class="card"><div class="cardLabel">${c.label}</div><div class="cardValue">${c.value}</div></div>`
-    )
-    .join('');
+  ].map(c =>
+    `<div class="card"><div class="cardLabel">${c.label}</div><div class="cardValue">${c.value}</div></div>`
+  ).join('');
 
   const alertRows = p.recentAlerts.length
-    ? p.recentAlerts
-        .map(
-          (a) =>
-            `<tr><td>${esc(
-              timestampToDate(a.timestamp)?.toLocaleString('en-IN') ?? '--'
-            )}</td><td>${esc(a.workerName)}</td><td>${esc(a.zone)}</td><td>${esc(
-              a.type
-            )}</td><td>${esc(a.value)}</td><td>${
-              a.resolved
-                ? '<span style="color:#16a34a">Resolved</span>'
-                : '<span style="color:#dc2626">Open</span>'
-            }</td></tr>`
-        )
-        .join('')
+    ? p.recentAlerts.map(a =>
+        `<tr>
+          <td>${esc(timestampToDate(a.timestamp)?.toLocaleString('en-IN') ?? '--')}</td>
+          <td>${esc(a.workerName)}</td><td>${esc(a.zone)}</td>
+          <td>${esc(a.type)}</td><td>${esc(a.value)}</td>
+          <td>${a.resolved ? '<span style="color:#16a34a">Resolved</span>' : '<span style="color:#dc2626">Open</span>'}</td>
+        </tr>`
+      ).join('')
     : '<tr><td colspan="6" style="text-align:center;color:#64748B">No alerts</td></tr>';
 
   const gasZoneRows = p.gasStats.length
-    ? p.gasStats
-        .map(
-          (z) =>
-            `<tr><td>${esc(z.zone)}</td><td>${esc(z.sewerLine)}</td><td>${z.avgCh4 ?? 'N/A'}</td><td>${z.avgH2s ?? 'N/A'}</td><td>${z.avgCo ?? 'N/A'}</td><td>${z.avgO2 ?? 'N/A'}</td><td>${z.avgNh3 ?? 'N/A'}</td><td>${z.readingsCount}</td></tr>`
-        )
-        .join('')
-    : '<tr><td colspan="8" style="text-align:center;color:#64748B">No gas data</td></tr>';
+    ? p.gasStats.map(z =>
+        `<tr>
+          <td>${esc(z.zone)}</td><td>${esc(z.sewerLine)}</td>
+          <td>${z.avgCo ?? 'N/A'}</td><td>${z.avgCh4 ?? 'N/A'}</td>
+          <td>${z.readingsCount}</td>
+        </tr>`
+      ).join('')
+    : '<tr><td colspan="5" style="text-align:center;color:#64748B">No gas data</td></tr>';
 
   return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
@@ -683,31 +762,17 @@ th{color:#64748B;font-size:10px;text-transform:uppercase;background:#F8FAFC;}
 .footer{margin-top:32px;font-size:11px;color:#94A3B8;text-align:center;}
 </style></head><body>
 <h1>SMC LiveMonitor Safety Report</h1>
-<div class="meta">Period: <strong>${pl}</strong> &nbsp;|&nbsp; Manager: <strong>${esc(
-    p.managerName
-  )}</strong> &nbsp;|&nbsp; Generated: <strong>${now}</strong></div>
+<div class="meta">Period: <strong>${pl}</strong> &nbsp;|&nbsp; Manager: <strong>${esc(p.managerName)}</strong> &nbsp;|&nbsp; Generated: <strong>${now}</strong></div>
 <h2>Summary</h2><div class="grid">${summaryCards}</div>
-<h2>Alert Breakdown</h2><ul>${p.alertsByType
-    .map((a) => `<li><span>${esc(a.label)}</span><strong>${a.count}</strong></li>`)
-    .join('')}</ul>
-<h2>Zone Performance</h2><ul>${p.zoneRows
-    .map(
-      (z) =>
-        `<li><span>${esc(z.name)}</span><span>${z.workers} workers · ${z.alerts} alerts · ${z.resolvedRate}% resolved</span></li>`
-    )
-    .join('')}</ul>
+<h2>Alert Breakdown</h2><ul>${p.alertsByType.map(a => `<li><span>${esc(a.label)}</span><strong>${a.count}</strong></li>`).join('')}</ul>
+<h2>Zone Performance</h2><ul>${p.zoneRows.map(z => `<li><span>${esc(z.name)}</span><span>${z.workers} workers · ${z.alerts} alerts · ${z.resolvedRate}% resolved</span></li>`).join('')}</ul>
 <h2>Overall Gas Concentration</h2>
 <div class="grid">
-  <div class="card"><div class="cardLabel">CH₄</div><div class="cardValue">${formatVal(g.avgCh4, ' ppm')}</div></div>
-  <div class="card"><div class="cardLabel">H₂S</div><div class="cardValue">${formatVal(g.avgH2s, ' ppm')}</div></div>
-  <div class="card"><div class="cardLabel">CO</div><div class="cardValue">${formatVal(g.avgCo, ' ppm')}</div></div>
-  <div class="card"><div class="cardLabel">O₂</div><div class="cardValue">${formatVal(g.avgO2, '%')}</div></div>
-  <div class="card"><div class="cardLabel">NH₃</div><div class="cardValue">${formatVal(g.avgNh3, ' ppm')}</div></div>
+  <div class="card"><div class="cardLabel">CO</div><div class="cardValue">${fmtVal(g.avgCo, ' ppm')}</div></div>
+  <div class="card"><div class="cardLabel">CH₄</div><div class="cardValue">${fmtVal(g.avgCh4, ' ppm')}</div></div>
 </div>
-<h2>Gas by Zone / Sewer Line (ppm, O₂ in %)</h2>
-<table><thead><tr><th>Zone</th><th>Sewer Line</th><th>CH₄</th><th>H₂S</th><th>CO</th><th>O₂</th><th>NH₃</th><th>Readings</th></tr></thead><tbody>${gasZoneRows}</tbody></table>
-<h2>Alert Logs (All Workers)</h2>
-<table><thead><tr><th>Time</th><th>Worker</th><th>Zone</th><th>Type</th><th>Value</th><th>Status</th></tr></thead><tbody>${alertRows}</tbody></table>
+<h2>Gas by Zone / Sewer Line</h2>
+<table><thead><tr><th>Zone</th><th>Sewer Line</th><th>CO (ppm)</th><th>CH₄ (ppm)</th><th>Readings</th></tr></thead><tbody>${gasZoneRows}</tbody></table>
 <div class="footer">SMC LiveMonitor &copy; ${new Date().getFullYear()} — Solapur Municipal Corporation</div>
 </body></html>`;
 }
@@ -715,77 +780,49 @@ th{color:#64748B;font-size:10px;text-transform:uppercase;background:#F8FAFC;}
 function buildReportCsv(p: ReportParams): string {
   const lines: string[] = [];
   const now = new Date().toLocaleString('en-IN');
-
   lines.push('SMC LiveMonitor Safety Report');
   lines.push(`Period,${csvCell(p.period)}`);
   lines.push(`Manager,${csvCell(p.managerName)}`);
   lines.push(`Generated,${csvCell(now)}`);
   lines.push('');
-
   lines.push('SUMMARY');
   lines.push(`Total Workers,${p.workersCount}`);
   lines.push(`Total Alerts,${p.totalAlerts}`);
   lines.push(`Resolved,${p.resolvedAlerts}`);
   lines.push(`Resolution Rate,${p.resolutionRate}%`);
   lines.push('');
-
   lines.push('ALERT BREAKDOWN');
   lines.push('Type,Count');
-  p.alertsByType.forEach((a) => lines.push(`${csvCell(a.label)},${a.count}`));
+  p.alertsByType.forEach(a => lines.push(`${csvCell(a.label)},${a.count}`));
   lines.push('');
-
   lines.push('ZONE PERFORMANCE');
   lines.push('Zone,Workers,Alerts,Resolution Rate');
-  p.zoneRows.forEach((z) =>
-    lines.push(`${csvCell(z.name)},${z.workers},${z.alerts},${z.resolvedRate}%`)
-  );
+  p.zoneRows.forEach(z => lines.push(`${csvCell(z.name)},${z.workers},${z.alerts},${z.resolvedRate}%`));
   lines.push('');
-
   lines.push('OVERALL GAS');
-  lines.push(`CH4 (ppm),${p.overallGas.avgCh4 ?? 'N/A'}`);
-  lines.push(`H2S (ppm),${p.overallGas.avgH2s ?? 'N/A'}`);
   lines.push(`CO (ppm),${p.overallGas.avgCo ?? 'N/A'}`);
-  lines.push(`O2 (%),${p.overallGas.avgO2 ?? 'N/A'}`);
-  lines.push(`NH3 (ppm),${p.overallGas.avgNh3 ?? 'N/A'}`);
+  lines.push(`CH4 (ppm),${p.overallGas.avgCh4 ?? 'N/A'}`);
   lines.push('');
-
   lines.push('GAS BY ZONE');
-  lines.push('Zone,Sewer Line,CH4 (ppm),H2S (ppm),CO (ppm),O2 (%),NH3 (ppm),Readings');
-  p.gasStats.forEach((z) =>
-    lines.push(
-      [
-        csvCell(z.zone),
-        csvCell(z.sewerLine),
-        z.avgCh4 ?? 'N/A',
-        z.avgH2s ?? 'N/A',
-        z.avgCo ?? 'N/A',
-        z.avgO2 ?? 'N/A',
-        z.avgNh3 ?? 'N/A',
-        z.readingsCount,
-      ].join(',')
-    )
+  lines.push('Zone,Sewer Line,CO (ppm),CH4 (ppm),Readings');
+  p.gasStats.forEach(z =>
+    lines.push([csvCell(z.zone), csvCell(z.sewerLine),
+      z.avgCo ?? 'N/A', z.avgCh4 ?? 'N/A', z.readingsCount].join(','))
   );
-
   lines.push('');
-  lines.push('ALERT LOGS (ALL WORKERS)');
+  lines.push('ALERT LOGS');
   lines.push('Time,Worker,Zone,Type,Value,Status');
-  p.recentAlerts.forEach((a) => {
-    lines.push(
-      [
-        csvCell(timestampToDate(a.timestamp)?.toLocaleString('en-IN') ?? '--'),
-        csvCell(a.workerName),
-        csvCell(a.zone),
-        csvCell(a.type),
-        csvCell(a.value),
-        a.resolved ? 'Resolved' : 'Open',
-      ].join(',')
-    );
-  });
-
+  p.recentAlerts.forEach(a =>
+    lines.push([
+      csvCell(timestampToDate(a.timestamp)?.toLocaleString('en-IN') ?? '--'),
+      csvCell(a.workerName), csvCell(a.zone), csvCell(a.type), csvCell(a.value),
+      a.resolved ? 'Resolved' : 'Open',
+    ].join(','))
+  );
   return lines.join('\n');
 }
 
-// ─── Web helpers ──────────────────────────────────────────────────────────────
+// ─── Web export helpers ────────────────────────────────────────────────────────
 
 function downloadCsvWeb(csv: string, filename: string) {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -805,20 +842,18 @@ async function openPdfWeb(html: string) {
   win.document.open();
   win.document.write(html);
   win.document.close();
-  win.onload = () => {
-    win.focus();
-    win.print();
-    setTimeout(() => win.close(), 1000);
-  };
-  setTimeout(() => {
-    if (!win.closed) {
-      win.focus();
-      win.print();
-    }
-  }, 800);
+  setTimeout(() => { win.focus(); win.print(); }, 800);
 }
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
+// ─── Main Screen ───────────────────────────────────────────────────────────────
+
+const ALERT_TYPES = [
+  { label: 'SOS',        color: Colors.danger,  icon: 'alarm-light',   match: (t: string) => t === 'SOS' },
+  { label: 'Gas',        color: '#F59E0B',       icon: 'gas-cylinder',  match: (t: string) => ['GAS', 'GAS_CRITICAL', 'CH4', 'H2S', 'CO', 'O2', 'NH3'].some(k => t.includes(k)) },
+  { label: 'SpO₂',       color: Colors.accent,   icon: 'lungs',         match: (t: string) => t.startsWith('SPO2') },
+  { label: 'Inactivity', color: Colors.info,     icon: 'timer-off',     match: (t: string) => t === 'INACTIVITY' },
+  { label: 'Heart Rate', color: '#9B59B6',        icon: 'heart-broken',  match: (t: string) => t === 'HEARTRATE' },
+];
 
 export default function ReportsScreen() {
   const { language, workers, alerts, manager, sensors } = useStore();
@@ -827,240 +862,164 @@ export default function ReportsScreen() {
   const [period, setPeriod] = useState<Period>('week');
   const [exporting, setExporting] = useState<false | 'pdf' | 'csv' | 'both'>(false);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [selectedGas, setSelectedGas] = useState<GasKey>('h2s');
+  const [selectedGas, setSelectedGas] = useState<string>('ch4');
+  const [activeTab, setActiveTab] = useState<'overview' | 'workers' | 'gas' | 'compliance'>('overview');
 
+  // Live state
   const [liveWorkers, setLiveWorkers] = useState<WorkerProfile[]>([]);
   const [liveSensors, setLiveSensors] = useState<Record<string, SensorData>>({});
   const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([]);
 
+  // Subscribe to live data — automatically reflects new workers
   useEffect(() => {
     if (!manager) return;
-
     let sensorUnsub: (() => void) | null = null;
 
     const unsubWorkers = listenToWorkers(manager.uid, (nextWorkers) => {
       setLiveWorkers(nextWorkers);
-
-      if (sensorUnsub) {
-        sensorUnsub();
-        sensorUnsub = null;
-      }
-
+      if (sensorUnsub) { sensorUnsub(); sensorUnsub = null; }
       if (nextWorkers.length > 0) {
-        sensorUnsub = listenToAllSensors(
-          nextWorkers.map((worker) => worker.id),
-          setLiveSensors
-        );
+        sensorUnsub = listenToAllSensors(nextWorkers.map(w => w.id), setLiveSensors);
       } else {
         setLiveSensors({});
       }
     });
 
-    const zones =
-      manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map((zone) => zone.id);
-
+    const zones = manager.zones.length > 0 ? manager.zones : SOLAPUR_ZONES.map(z => z.id);
     const unsubAlerts = listenToAlerts(zones, setLiveAlerts);
 
-    return () => {
-      if (sensorUnsub) sensorUnsub();
-      unsubWorkers();
-      unsubAlerts();
-    };
+    return () => { sensorUnsub?.(); unsubWorkers(); unsubAlerts(); };
   }, [manager]);
 
   const effectiveWorkers = liveWorkers.length > 0 ? liveWorkers : workers;
   const effectiveSensors = Object.keys(liveSensors).length > 0 ? liveSensors : sensors;
-  const effectiveAlerts = liveAlerts.length > 0 ? liveAlerts : alerts;
+  const effectiveAlerts  = liveAlerts.length > 0 ? liveAlerts : alerts;
 
-  const premonitoringReadings = useMemo((): PremonitoringReading[] => {
-    return Object.entries(effectiveSensors).map(([workerId, s]) => ({
+  // Gas readings derived from sensors
+  const gasReadings = useMemo((): GasReading[] =>
+    Object.entries(effectiveSensors).map(([, s]) => ({
+      zone:       s.zone ?? s.locationLabel ?? 'Unknown',
+      sewerLine:  s.manholeId ?? s.locationLabel ?? 'Unknown',
+      ch4:        s.ch4        && s.ch4 > 0        ? s.ch4        : null,
+      h2s:        s.h2s        && s.h2s > 0        ? s.h2s        : null,
+      co:         (s as any).co  && (s as any).co > 0   ? (s as any).co  : null,
+      o2:         (s as any).o2  && (s as any).o2 > 0   ? (s as any).o2  : null,
+      nh3:        (s as any).nh3 && (s as any).nh3 > 0  ? (s as any).nh3 : null,
+      waterLevel: s.waterLevel,
+      timestamp:  s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+    })),
+  [effectiveSensors]);
+
+  // Vital readings
+  const vitalReadings = useMemo((): VitalReading[] =>
+    Object.entries(effectiveSensors).map(([workerId, s]) => ({
       workerId,
       workerName: effectiveWorkers.find((w: any) => w.id === workerId)?.name ?? workerId,
-      zone: s.zone ?? s.locationLabel ?? 'Unknown',
-      heartRate: s.heartRate && s.heartRate > 0 ? s.heartRate : null,
-      spo2: s.spO2 && s.spO2 > 0 ? s.spO2 : null,
+      zone:       s.zone ?? s.locationLabel ?? 'Unknown',
+      heartRate:  s.heartRate && s.heartRate > 0 ? s.heartRate : null,
+      spo2:       s.spO2      && s.spO2 > 0      ? s.spO2      : null,
       temperature: null,
-      timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
-    }));
-  }, [effectiveSensors, effectiveWorkers]);
+      timestamp:  s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+    })),
+  [effectiveSensors, effectiveWorkers]);
 
-  const gasReadings = useMemo((): GasReading[] => {
-    return Object.entries(effectiveSensors).map(([, s]) => ({
-      zone: s.zone ?? s.locationLabel ?? 'Unknown',
-      sewerLine: s.manholeId ?? s.locationLabel ?? 'Unknown',
-      ch4: s.ch4 && s.ch4 > 0 ? s.ch4 : null,
-      h2s: s.h2s && s.h2s > 0 ? s.h2s : null,
-      co: null,
-      o2: null,
-      nh3: null,
-      timestamp: s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
-    }));
-  }, [effectiveSensors]);
+  // Period-filtered data
+  const periodAlerts = useMemo(() =>
+    (effectiveAlerts as ReportAlert[]).filter(a => isInPeriod(a.timestamp ?? Date.now(), period)),
+  [effectiveAlerts, period]);
 
-  const periodAlerts = useMemo(
-    () => (effectiveAlerts as ReportAlert[]).filter((a) => isInPeriod(a.timestamp ?? Date.now(), period)),
-    [effectiveAlerts, period]
-  );
+  const periodGasReadings = useMemo(() =>
+    gasReadings.filter(r => isInPeriod(r.timestamp, period)),
+  [gasReadings, period]);
 
-  const totalAlerts = periodAlerts.length;
-  const resolvedAlerts = periodAlerts.filter((a) => a.resolved).length;
+  // Summary stats
+  const totalAlerts    = periodAlerts.length;
+  const resolvedAlerts = periodAlerts.filter(a => a.resolved).length;
   const resolutionRate = totalAlerts > 0 ? Math.round((resolvedAlerts / totalAlerts) * 100) : 100;
 
-  const alertsByType = useMemo(
-    () =>
-      [
-        {
-          label: 'SOS',
-          color: Colors.danger,
-          icon: 'alarm-light',
-          match: (t: string) => t === 'SOS',
-        },
-        {
-          label: 'Gas',
-          color: Colors.warning,
-          icon: 'gas-cylinder',
-          match: (t: string) =>
-            ['GAS', 'GAS_CRITICAL', 'CH4', 'H2S', 'CO', 'O2', 'NH3'].some((k) =>
-              t.includes(k)
-            ),
-        },
-        {
-          label: 'SpO₂',
-          color: Colors.accent,
-          icon: 'thermometer-alert',
-          match: (t: string) => t.startsWith('SPO2'),
-        },
-        {
-          label: 'Inactivity',
-          color: Colors.info,
-          icon: 'timer-off',
-          match: (t: string) => t === 'INACTIVITY',
-        },
-        {
-          label: 'Heart Rate',
-          color: '#9B59B6',
-          icon: 'heart-broken',
-          match: (t: string) => t === 'HEARTRATE',
-        },
-      ].map((type) => ({
-        ...type,
-        count: periodAlerts.filter((a) => type.match(a.type)).length,
-      })),
-    [periodAlerts]
-  );
+  const alertsByType = useMemo(() =>
+    ALERT_TYPES.map(type => ({
+      ...type,
+      count: periodAlerts.filter(a => type.match(a.type)).length,
+    })),
+  [periodAlerts]);
 
-  const premonitoringStats = useMemo(() => {
-    const r = premonitoringReadings.filter((x) => isInPeriod(x.timestamp, period));
-    return {
-      readingsCount: r.length,
-      avgHeartRate: avg(r.map((x) => x.heartRate ?? null)),
-      avgSpo2: avg(r.map((x) => x.spo2 ?? null)),
-      avgTemperature: avg(r.map((x) => x.temperature ?? null)),
-    };
-  }, [premonitoringReadings, period]);
-
-  const periodGasReadings = useMemo(
-    () => gasReadings.filter((r) => isInPeriod(r.timestamp, period)),
-    [gasReadings, period]
-  );
-
-  const overallGas = useMemo(
-    () => ({
-      avgCh4: avg(periodGasReadings.map((r) => r.ch4 ?? null)),
-      avgH2s: avg(periodGasReadings.map((r) => r.h2s ?? null)),
-      avgCo: avg(periodGasReadings.map((r) => r.co ?? null)),
-      avgO2: avg(periodGasReadings.map((r) => r.o2 ?? null)),
-      avgNh3: avg(periodGasReadings.map((r) => r.nh3 ?? null)),
-    }),
-    [periodGasReadings]
-  );
+  const overallGas = useMemo(() => ({
+    avgCo:  avg(periodGasReadings.map(r => r.co  ?? null)),
+    avgCh4: avg(periodGasReadings.map(r => r.ch4 ?? null)),
+    // kept in type for PDF builder compatibility
+    avgH2s: null as number | null,
+    avgO2:  null as number | null,
+    avgNh3: null as number | null,
+  }), [periodGasReadings]);
 
   const gasStats = useMemo(() => {
     const map = new Map<string, GasReading[]>();
-
-    periodGasReadings.forEach((r) => {
+    periodGasReadings.forEach(r => {
       const key = `${r.zone}||${r.sewerLine ?? 'Unknown'}`;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     });
-
     return Array.from(map.entries()).map(([key, recs]) => {
       const [zone, sewerLine] = key.split('||');
       return {
-        zone,
-        sewerLine,
-        avgCh4: avg(recs.map((r) => r.ch4 ?? null)),
-        avgH2s: avg(recs.map((r) => r.h2s ?? null)),
-        avgCo: avg(recs.map((r) => r.co ?? null)),
-        avgO2: avg(recs.map((r) => r.o2 ?? null)),
-        avgNh3: avg(recs.map((r) => r.nh3 ?? null)),
+        zone, sewerLine,
+        avgCo:   avg(recs.map(r => r.co  ?? null)),
+        avgCh4:  avg(recs.map(r => r.ch4 ?? null)),
+        avgH2s:  null as number | null,
+        avgO2:   null as number | null,
+        avgNh3:  null as number | null,
         readingsCount: recs.length,
       };
     });
   }, [periodGasReadings]);
 
-  const gasTrendData = useMemo(
-    () => getGasTrend(periodGasReadings, selectedGas, period),
-    [periodGasReadings, selectedGas, period]
-  );
+  const gasTrendData = useMemo(() =>
+    getGasTrend(periodGasReadings, selectedGas, period),
+  [periodGasReadings, selectedGas, period]);
 
-  const alertTrendData = useMemo(
-    () => getAlertTrend(periodAlerts, period),
-    [periodAlerts, period]
-  );
+  const alertTrendData = useMemo(() =>
+    getAlertTrend(periodAlerts, period),
+  [periodAlerts, period]);
 
   const zoneRows = useMemo(() => {
-    const zones = [
-      ...new Set(
-        [
-          ...effectiveWorkers.map((w: any) => w.zone),
-          ...periodAlerts.map((a) => a.zone),
-          ...Object.values(effectiveSensors).map((s) => s.zone ?? s.locationLabel),
-        ].filter(Boolean)
-      ),
-    ];
-
+    const zones = [...new Set([
+      ...effectiveWorkers.map((w: any) => w.zone),
+      ...periodAlerts.map(a => a.zone),
+      ...Object.values(effectiveSensors).map(s => s.zone ?? s.locationLabel),
+    ].filter(Boolean))];
     return zones.map((zoneId: string) => {
-      const za = periodAlerts.filter((a) => a.zone === zoneId);
+      const za = periodAlerts.filter(a => a.zone === zoneId);
       return {
         name: `${zoneId.charAt(0).toUpperCase() + zoneId.slice(1)} Zone`,
         workers: effectiveWorkers.filter((w: any) => w.zone === zoneId).length,
         alerts: za.length,
-        resolvedRate: za.length
-          ? Math.round((za.filter((a) => a.resolved).length / za.length) * 100)
-          : 100,
+        resolvedRate: za.length ? Math.round((za.filter(a => a.resolved).length / za.length) * 100) : 100,
       };
     });
   }, [effectiveWorkers, periodAlerts, effectiveSensors]);
 
-  const recentAlerts = useMemo(
-    () =>
-      [...periodAlerts]
-        .sort(
-          (a, b) =>
-            (timestampToDate(b.timestamp ?? 0)?.getTime() ?? 0) -
-            (timestampToDate(a.timestamp ?? 0)?.getTime() ?? 0)
-        )
-        .slice(0, 20),
-    [periodAlerts]
-  );
+  const recentAlerts = useMemo(() =>
+    [...periodAlerts]
+      .sort((a, b) => (timestampToDate(b.timestamp ?? 0)?.getTime() ?? 0) - (timestampToDate(a.timestamp ?? 0)?.getTime() ?? 0))
+      .slice(0, 25),
+  [periodAlerts]);
+
+  const liveWorkerRows = useMemo(() =>
+    effectiveWorkers.map(worker => ({ worker, sensor: effectiveSensors[(worker as any).id] ?? null })),
+  [effectiveWorkers, effectiveSensors]);
 
   const reportParams: ReportParams = {
-    period,
-    managerName: manager?.name || 'Manager',
+    period, managerName: manager?.name || 'Manager',
     workersCount: effectiveWorkers.length,
-    totalAlerts,
-    resolvedAlerts,
-    resolutionRate,
+    totalAlerts, resolvedAlerts, resolutionRate,
     alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
-    zoneRows,
-    recentAlerts,
-    gasStats,
-    overallGas,
+    zoneRows, recentAlerts, gasStats, overallGas,
   };
 
   const fileName = `smc-livemonitor-${period}-report`;
 
+  // Export
   const exportPdf = async () => {
     const html = buildReportHtml(reportParams);
     if (Platform.OS === 'web') {
@@ -1068,10 +1027,7 @@ export default function ReportsScreen() {
     } else {
       const r = await Print.printToFileAsync({ html });
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(r.uri, {
-          mimeType: 'application/pdf',
-          dialogTitle: 'Share PDF Report',
-        });
+        await Sharing.shareAsync(r.uri, { mimeType: 'application/pdf', dialogTitle: 'Share PDF Report' });
       } else {
         Alert.alert('PDF ready', r.uri);
       }
@@ -1080,20 +1036,13 @@ export default function ReportsScreen() {
 
   const exportCsv = async () => {
     const csv = buildReportCsv(reportParams);
-
     if (Platform.OS === 'web') {
       downloadCsvWeb(csv, `${fileName}.csv`);
     } else {
       const uri = `${FileSystem.documentDirectory}${fileName}.csv`;
-      await FileSystem.writeAsStringAsync(uri, csv, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-
+      await FileSystem.writeAsStringAsync(uri, csv, { encoding: FileSystem.EncodingType.UTF8 });
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'text/csv',
-          dialogTitle: 'Share CSV Report',
-        });
+        await Sharing.shareAsync(uri, { mimeType: 'text/csv', dialogTitle: 'Share CSV Report' });
       } else {
         Alert.alert('CSV ready', uri);
       }
@@ -1103,17 +1052,12 @@ export default function ReportsScreen() {
   const runExport = async (format: 'pdf' | 'csv' | 'both') => {
     setShowExportModal(false);
     setExporting(format);
-
     try {
       if (format === 'pdf' || format === 'both') await exportPdf();
       if (format === 'csv' || format === 'both') await exportCsv();
     } catch (e: any) {
       const msg = e?.message ?? 'Could not generate report.';
-      if (Platform.OS === 'web') {
-        window.alert(`Export failed: ${msg}`);
-      } else {
-        Alert.alert('Export failed', msg);
-      }
+      Platform.OS === 'web' ? window.alert(`Export failed: ${msg}`) : Alert.alert('Export failed', msg);
     } finally {
       setExporting(false);
     }
@@ -1121,445 +1065,466 @@ export default function ReportsScreen() {
 
   const showExportMenu = () => {
     if (exporting) return;
-
     if (Platform.OS === 'web') {
       setShowExportModal(true);
     } else {
       Alert.alert('Export Report', `Choose a format for the ${period} report.`, [
-        { text: 'PDF', onPress: () => void runExport('pdf') },
-        { text: 'CSV', onPress: () => void runExport('csv') },
-        { text: 'Both', onPress: () => void runExport('both') },
+        { text: 'PDF',    onPress: () => void runExport('pdf')  },
+        { text: 'CSV',    onPress: () => void runExport('csv')  },
+        { text: 'Both',   onPress: () => void runExport('both') },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
   };
 
-  const selectedGasCfg = GAS_CONFIG.find((g) => g.key === selectedGas)!;
+  const selectedGasCfg = GAS_CONFIG.find(g => g.key === selectedGas) ?? GAS_CONFIG[0];
+  const sensorCount = Object.keys(effectiveSensors).length;
 
-  const liveWorkerRows = useMemo(
-    () => effectiveWorkers.map((worker) => ({ worker, sensor: effectiveSensors[worker.id] ?? null })),
-    [effectiveWorkers, effectiveSensors]
-  );
+  const TABS = [
+    { key: 'overview',    label: 'Overview',   icon: 'view-dashboard-outline' },
+    { key: 'workers',     label: 'Workers',    icon: 'account-hard-hat-outline' },
+    { key: 'gas',         label: 'Gas & Env',  icon: 'gas-cylinder' },
+    { key: 'compliance',  label: 'Compliance', icon: 'shield-check-outline' },
+  ] as const;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.safeArea}>
+      {/* ── SAMVED Header ── */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>{T.dashboard?.reports ?? 'Reports'}</Text>
-          <Text style={styles.headerSub}>Solapur Municipal Corporation</Text>
+        <View style={styles.headerLeft}>
+          <View style={styles.headerIconWrap}>
+            <MaterialCommunityIcons name="shield-account" size={22} color="#fff" />
+          </View>
+          <View>
+            <Text style={styles.headerTitle}>SAMVED</Text>
+            <Text style={styles.headerSub}>Smart Adaptive Monitoring &amp; Vital Emergency Detection</Text>
+          </View>
         </View>
-
-        <TouchableOpacity
-          style={[styles.exportBtn, !!exporting && styles.exportBtnDisabled]}
-          onPress={showExportMenu}
-          disabled={!!exporting}
-        >
-          {exporting ? (
-            <ActivityIndicator size="small" color={Colors.white} />
-          ) : (
-            <MaterialCommunityIcons name="download" size={18} color={Colors.white} />
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={[styles.exportBtn, !!exporting && { opacity: 0.7 }]}
+            onPress={showExportMenu}
+            disabled={!!exporting}
+          >
+            {exporting
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <MaterialCommunityIcons name="download" size={15} color="#fff" />
+            }
+            <Text style={styles.exportBtnText}>{exporting ? '…' : 'Export'}</Text>
+          </TouchableOpacity>
+          <View style={styles.liveBadge}>
+            <View style={styles.liveBadgeDot} />
+            <Text style={styles.liveBadgeText}>LIVE</Text>
+          </View>
+          {sensorCount > 0 && (
+            <View style={styles.sensorCountBadge}>
+              <Text style={styles.sensorCountText}>#{sensorCount}</Text>
+            </View>
           )}
-          <Text style={styles.exportBtnText}>{exporting ? 'Exporting…' : 'Export'}</Text>
-        </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* ── Period Selector ── */}
+      <View style={styles.periodRow}>
+        {(['today', 'week', 'month'] as Period[]).map(v => (
+          <TouchableOpacity
+            key={v}
+            style={[styles.periodBtn, period === v && styles.periodBtnActive]}
+            onPress={() => setPeriod(v)}
+          >
+            <Text style={[styles.periodText, period === v && styles.periodTextActive]}>
+              {v.charAt(0).toUpperCase() + v.slice(1)}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* ── Tab Bar ── */}
+      <View style={styles.tabBar}>
+        {TABS.map(tab => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.tabItem, activeTab === tab.key && styles.tabItemActive]}
+            onPress={() => setActiveTab(tab.key)}
+          >
+            <MaterialCommunityIcons
+              name={tab.icon as any}
+              size={16}
+              color={activeTab === tab.key ? Colors.primary : '#94A3B8'}
+            />
+            <Text style={[styles.tabLabel, activeTab === tab.key && styles.tabLabelActive]}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{
-          padding: Spacing.md,
-          gap: Spacing.md,
-          paddingBottom: 80,
-        }}
+        contentContainerStyle={styles.scrollContent}
       >
-        <View style={styles.periodRow}>
-          {(['today', 'week', 'month'] as Period[]).map((v) => (
-            <TouchableOpacity
-              key={v}
-              style={[styles.periodBtn, period === v && styles.periodBtnActive]}
-              onPress={() => setPeriod(v)}
-            >
-              <Text style={[styles.periodText, period === v && styles.periodTextActive]}>
-                {v.charAt(0).toUpperCase() + v.slice(1)}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {/* ═══════════════ OVERVIEW TAB ═══════════════ */}
+        {activeTab === 'overview' && (
+          <>
+            {/* Summary Cards */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📊 Summary</Text>
+              <Text style={styles.sectionSub}>This {period} · {manager?.name ?? '—'}</Text>
+              <View style={styles.summaryRow}>
+                {[
+                  { label: 'Workers',     value: String(effectiveWorkers.length), icon: 'account-hard-hat', color: Colors.primary },
+                  { label: 'Alerts',      value: String(totalAlerts),             icon: 'alarm-light',      color: Colors.danger  },
+                  { label: 'Resolved',    value: String(resolvedAlerts),           icon: 'check-circle',     color: Colors.success },
+                  { label: 'Rate',        value: `${resolutionRate}%`,             icon: 'percent',          color: Colors.accent  },
+                ].map(s => (
+                  <View key={s.label} style={styles.summaryCard}>
+                    <MaterialCommunityIcons name={s.icon as any} size={22} color={s.color} />
+                    <Text style={[styles.summaryValue, { color: s.color }]}>{s.value}</Text>
+                    <Text style={styles.summaryLabel}>{s.label}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
 
-        {Object.keys(effectiveSensors).length > 0 && (
-          <View style={styles.liveNotice}>
-            <MaterialCommunityIcons name="access-point" size={14} color={Colors.success} />
-            <Text style={styles.liveNoticeText}>
-              Live data from {Object.keys(effectiveSensors).length} sensor
-              {Object.keys(effectiveSensors).length !== 1 ? 's' : ''} · Updates in real-time
-            </Text>
-          </View>
+            {/* Alert Trend */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📈 Alert Trend</Text>
+              <Text style={styles.sectionSub}>
+                Alerts per {period === 'today' ? '4-hour block' : period === 'week' ? 'day' : 'week'}
+              </Text>
+              <BarChart data={alertTrendData} color={Colors.primary} />
+            </View>
+
+            {/* Alert Breakdown */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🚨 Alert Breakdown</Text>
+              {alertsByType.every(a => a.count === 0)
+                ? <Text style={styles.emptyText}>No alerts recorded this {period}.</Text>
+                : alertsByType.map(item => (
+                  <View key={item.label} style={styles.alertRow}>
+                    <MaterialCommunityIcons name={item.icon as any} size={18} color={item.color} />
+                    <Text style={styles.alertRowLabel}>{item.label}</Text>
+                    <View style={styles.alertBarTrack}>
+                      <View style={[styles.alertBarFill, {
+                        width: `${totalAlerts > 0 ? (item.count / totalAlerts) * 100 : 0}%`,
+                        backgroundColor: item.color,
+                      }]} />
+                    </View>
+                    <Text style={[styles.alertRowCount, { color: item.color }]}>{item.count}</Text>
+                  </View>
+                ))
+              }
+            </View>
+
+            {/* Zone Performance */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🗺️ Zone Performance</Text>
+              {zoneRows.length === 0
+                ? <Text style={styles.emptyText}>No zone data available.</Text>
+                : zoneRows.map(zone => (
+                  <View key={zone.name} style={styles.zoneRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.zoneRowName}>{zone.name}</Text>
+                      <Text style={styles.zoneRowMeta}>{zone.workers} workers · {zone.alerts} alerts</Text>
+                    </View>
+                    <View style={[styles.rateChip, {
+                      backgroundColor: zone.resolvedRate === 100 ? Colors.successBg
+                        : zone.resolvedRate > 70 ? Colors.warningBg : Colors.dangerBg,
+                    }]}>
+                      <Text style={[styles.rateText, {
+                        color: zone.resolvedRate === 100 ? Colors.success
+                          : zone.resolvedRate > 70 ? Colors.warning : Colors.danger,
+                      }]}>
+                        {zone.resolvedRate}%
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              }
+            </View>
+
+          </>
         )}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>📊 Summary</Text>
-          <Text style={styles.cardSub}>
-            Period: This {period} · Manager: {manager?.name ?? '—'}
-          </Text>
-
-          <View style={styles.summaryGrid}>
-            {[
-              {
-                label: 'Total Workers',
-                value: String(effectiveWorkers.length),
-                icon: 'account-hard-hat',
-                color: Colors.primary,
-              },
-              {
-                label: 'Total Alerts',
-                value: String(totalAlerts),
-                icon: 'alarm-light',
-                color: Colors.danger,
-              },
-              {
-                label: 'Resolved',
-                value: String(resolvedAlerts),
-                icon: 'check-circle',
-                color: Colors.success,
-              },
-              {
-                label: 'Resolution Rate',
-                value: `${resolutionRate}%`,
-                icon: 'percent',
-                color: Colors.accent,
-              },
-            ].map((s) => (
-              <View key={s.label} style={styles.summaryItem}>
-                <MaterialCommunityIcons name={s.icon as any} size={20} color={s.color} />
-                <Text style={[styles.summaryValue, { color: s.color }]}>{s.value}</Text>
-                <Text style={styles.summaryLabel}>{s.label}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>👷 Live Values by Worker</Text>
-          <Text style={styles.cardSub}>Current sensor snapshot for each worker</Text>
-
-          {liveWorkerRows.length > 0 ? (
-            <View style={{ gap: Spacing.sm }}>
-              {liveWorkerRows.map(({ worker, sensor }) => (
-                <LiveWorkerCard key={worker.id} worker={worker} sensor={sensor} />
-              ))}
+        {/* ═══════════════ WORKERS TAB ═══════════════ */}
+        {activeTab === 'workers' && (
+          <>
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>👷 Live Worker Values</Text>
+              <Text style={styles.sectionSub}>
+                {effectiveWorkers.length} worker{effectiveWorkers.length !== 1 ? 's' : ''} · Real-time sensor snapshot
+              </Text>
+              {liveWorkerRows.length === 0
+                ? <Text style={styles.emptyText}>No workers assigned. Add workers to see live data here.</Text>
+                : liveWorkerRows.map(({ worker, sensor }) => (
+                  <LiveWorkerCard key={(worker as any).id} worker={worker} sensor={sensor} />
+                ))
+              }
             </View>
-          ) : (
-            <Text style={styles.cardSub}>No worker sensor data available.</Text>
-          )}
-        </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>📈 Alert Trend</Text>
-          <Text style={styles.cardSub}>
-            Alerts per {period === 'today' ? '4-hour slot' : period === 'week' ? 'day' : 'week'}
-          </Text>
-          <BarChart data={alertTrendData} color={Colors.primary} />
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>🚨 Alert Breakdown</Text>
-
-          {alertsByType.every((a) => a.count === 0) && (
-            <Text style={styles.cardSub}>No alerts recorded this {period}.</Text>
-          )}
-
-          {alertsByType.map((item) => (
-            <View key={item.label} style={styles.alertRow}>
-              <MaterialCommunityIcons name={item.icon as any} size={18} color={item.color} />
-              <Text style={styles.alertRowLabel}>{item.label}</Text>
-              <View style={styles.alertBarTrack}>
-                <View
-                  style={[
-                    styles.alertBar,
-                    {
-                      width: `${totalAlerts > 0 ? (item.count / totalAlerts) * 100 : 0}%`,
-                      backgroundColor: item.color,
-                    },
-                  ]}
-                />
-              </View>
-              <Text style={[styles.alertRowCount, { color: item.color }]}>{item.count}</Text>
-            </View>
-          ))}
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>🩺 Pre-monitoring Vitals</Text>
-          <Text style={styles.cardSub}>
-            {premonitoringStats.readingsCount} worker
-            {premonitoringStats.readingsCount !== 1 ? 's' : ''} reporting vitals
-          </Text>
-
-          <View style={styles.summaryGrid}>
-            {[
-              {
-                label: 'Avg Heart Rate',
-                value: formatVal(premonitoringStats.avgHeartRate, ' bpm'),
-                icon: 'heart-pulse',
-                color: Colors.danger,
-              },
-              {
-                label: 'Avg SpO₂',
-                value: formatVal(premonitoringStats.avgSpo2, '%'),
-                icon: 'lungs',
-                color: Colors.info,
-              },
-              {
-                label: 'Avg Temp',
-                value: formatVal(premonitoringStats.avgTemperature, '°C'),
-                icon: 'thermometer',
-                color: Colors.warning,
-              },
-            ].map((s) => (
-              <View key={s.label} style={[styles.summaryItem, { width: '30%' }]}>
-                <MaterialCommunityIcons name={s.icon as any} size={20} color={s.color} />
-                <Text style={[styles.summaryValue, { color: s.color, fontSize: 15 }]}>
-                  {s.value}
-                </Text>
-                <Text style={styles.summaryLabel}>{s.label}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>☁️ Overall Gas Concentration</Text>
-          <Text style={styles.cardSub}>
-            Averaged across all sewer lines · {periodGasReadings.length} sensor
-            {periodGasReadings.length !== 1 ? 's' : ''}
-            {'\n'}
-            <Text style={{ color: Colors.textSecondary, fontSize: 11 }}>
-              CO, O₂, NH₃ — not available in current hardware
-            </Text>
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingVertical: 8 }}
-          >
-            {GAS_CONFIG.map((g) => {
-              const val = (overallGas as any)[
-                `avg${g.key.charAt(0).toUpperCase() + g.key.slice(1)}`
-              ] as number | null;
-
-              return (
-                <GaugeChart
-                  key={g.key}
-                  value={val}
-                  max={g.dangerAt * 1.5}
-                  color={g.color}
-                  label={g.label}
-                  unit={g.unit}
-                />
-              );
-            })}
-          </ScrollView>
-
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
-              <Text style={styles.legendText}>Safe</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#F97316' }]} />
-              <Text style={styles.legendText}>Caution</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
-              <Text style={styles.legendText}>Danger</Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>📉 Gas Concentration Trend</Text>
-          <Text style={styles.cardSub}>Select a gas to view its trend over the period</Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, marginBottom: 12 }}
-          >
-            {GAS_CONFIG.map((g) => {
-              const active = selectedGas === g.key;
-              return (
-                <TouchableOpacity
-                  key={g.key}
-                  onPress={() => setSelectedGas(g.key)}
-                  style={[
-                    styles.gasTab,
-                    active && { backgroundColor: g.color, borderColor: g.color },
-                  ]}
-                >
-                  <Text style={[styles.gasTabText, active && { color: '#fff' }]}>
-                    {g.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          <LineChart
-            data={gasTrendData}
-            color={selectedGasCfg.color}
-            unit={selectedGasCfg.unit}
-            safeMax={selectedGasCfg.safeMax}
-            dangerAt={selectedGasCfg.dangerAt}
-          />
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>🗺️ Zone Performance</Text>
-          {zoneRows.length === 0 && <Text style={styles.cardSub}>No zone data available.</Text>}
-
-          {zoneRows.map((zone) => (
-            <View key={zone.name} style={styles.zoneRow}>
-              <View style={styles.zoneRowLeft}>
-                <Text style={styles.zoneRowName}>{zone.name}</Text>
-                <Text style={styles.zoneRowMeta}>
-                  {zone.workers} workers · {zone.alerts} alerts
-                </Text>
-              </View>
-
-              <View
-                style={[
-                  styles.rateChip,
+            {/* Pre-monitoring vitals summary */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🩺 Vitals Overview</Text>
+              <Text style={styles.sectionSub}>Averaged from active workers</Text>
+              <View style={styles.summaryRow}>
+                {[
                   {
-                    backgroundColor:
-                      zone.resolvedRate === 100
-                        ? Colors.successBg
-                        : zone.resolvedRate > 70
-                        ? Colors.warningBg
-                        : Colors.dangerBg,
+                    label: 'Avg Heart Rate',
+                    value: fmtVal(avg(Object.values(effectiveSensors).map(s => s.heartRate && s.heartRate > 0 ? s.heartRate : null)), ' bpm'),
+                    icon: 'heart-pulse', color: Colors.danger,
                   },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.rateText,
-                    {
-                      color:
-                        zone.resolvedRate === 100
-                          ? Colors.success
-                          : zone.resolvedRate > 70
-                          ? Colors.warning
-                          : Colors.danger,
-                    },
-                  ]}
-                >
-                  {zone.resolvedRate}%
-                </Text>
+                  {
+                    label: 'Avg SpO₂',
+                    value: fmtVal(avg(Object.values(effectiveSensors).map(s => s.spO2 && s.spO2 > 0 ? s.spO2 : null)), '%'),
+                    icon: 'lungs', color: Colors.info,
+                  },
+                ].map(s => (
+                  <View key={s.label} style={[styles.summaryCard, { width: '47%' }]}>
+                    <MaterialCommunityIcons name={s.icon as any} size={22} color={s.color} />
+                    <Text style={[styles.summaryValue, { color: s.color, fontSize: 15 }]}>{s.value}</Text>
+                    <Text style={styles.summaryLabel}>{s.label}</Text>
+                  </View>
+                ))}
               </View>
             </View>
-          ))}
-        </View>
+          </>
+        )}
 
-        <View style={[styles.card, { backgroundColor: Colors.primary }]}>
-          <View style={styles.complianceHeader}>
-            <MaterialCommunityIcons name="shield-check" size={24} color={Colors.accent} />
-            <Text style={[styles.cardTitle, { color: Colors.white }]}>Safety Compliance</Text>
-          </View>
+        {/* ═══════════════ GAS & ENV TAB ═══════════════ */}
+        {activeTab === 'gas' && (
+          <>
+            {/* Overall Gauges */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>☁️ Overall Gas Concentration</Text>
+              <Text style={styles.sectionSub}>
+                {periodGasReadings.length} sensor reading{periodGasReadings.length !== 1 ? 's' : ''} · Colour coded by level
+              </Text>
 
-          <Text style={[styles.complianceScore, { color: Colors.accent }]}>
-            {resolutionRate}%
-          </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.gaugeRow}>
+                {GAS_CONFIG.map(g => {
+                  const valKey = `avg${g.key.charAt(0).toUpperCase() + g.key.slice(1)}` as keyof typeof overallGas;
+                  const val = overallGas[valKey] as number | null;
+                  return <SemiGauge key={g.key} value={val} cfg={g} size={110} />;
+                })}
+              </ScrollView>
 
-          <Text style={[styles.cardSub, { color: '#B8C8D8' }]}>
-            Overall alert resolution rate this {period}
-          </Text>
-
-          <View style={styles.complianceBar}>
-            <View style={[styles.complianceFill, { width: `${resolutionRate}%` }]} />
-          </View>
-
-          <Text style={[styles.complianceNote, { color: '#8899AA' }]}>
-            {resolutionRate >= 90
-              ? '✅ Excellent compliance'
-              : resolutionRate >= 70
-              ? '⚠️ Needs improvement'
-              : '❌ Critical attention required'}
-          </Text>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>📋 Recent Alert Logs</Text>
-          <Text style={styles.cardSub}>Latest alerts from all workers</Text>
-
-          {recentAlerts.length === 0 ? (
-            <Text style={styles.cardSub}>No alerts for this period.</Text>
-          ) : (
-            <View style={{ gap: 10 }}>
-              {recentAlerts.map((a, idx) => (
-                <View key={`${a.workerName}-${a.type}-${idx}`} style={styles.logRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.logTitle}>
-                      {a.workerName} · {a.type}
-                    </Text>
-                    <Text style={styles.logMeta}>
-                      {a.zone} · {a.value} ·{' '}
-                      {timestampToDate(a.timestamp)?.toLocaleString('en-IN') ?? '--'}
-                    </Text>
+              {/* Legend */}
+              <View style={styles.gaugeLegendRow}>
+                {(['safe', 'caution', 'danger'] as const).map(lvl => (
+                  <View key={lvl} style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: LEVEL_COLORS[lvl] }]} />
+                    <Text style={styles.legendText}>{lvl.charAt(0).toUpperCase() + lvl.slice(1)}</Text>
                   </View>
-
-                  <View
-                    style={[
-                      styles.statusChip,
-                      {
-                        backgroundColor: a.resolved ? Colors.successBg : Colors.dangerBg,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusChipText,
-                        { color: a.resolved ? Colors.success : Colors.danger },
-                      ]}
-                    >
-                      {a.resolved ? 'Resolved' : 'Open'}
-                    </Text>
-                  </View>
-                </View>
-              ))}
+                ))}
+              </View>
             </View>
-          )}
-        </View>
+
+            {/* Pre-monitoring L1/L2/L3 cards */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🔬 Pre-monitoring Gas Levels</Text>
+              <Text style={styles.sectionSub}>L1 = Safe · L2 = Caution · L3 = Danger</Text>
+              {GAS_CONFIG.map(g => (
+                <GasLevelCard key={g.key} gasKey={g.key} readings={periodGasReadings} />
+              ))}
+
+              {/* Water level */}
+              <View style={styles.waterSection}>
+                <Text style={styles.sectionTitle}>💧 Water Level</Text>
+                <View style={styles.waterRow}>
+                  {Object.entries(effectiveSensors).map(([wid, s]) => {
+                    const workerName = effectiveWorkers.find((w: any) => w.id === wid)?.name ?? wid;
+                    return (
+                      <View key={wid} style={styles.waterWorkerCell}>
+                        <WaterLevelBar value={s.waterLevel ?? null} />
+                        <Text style={styles.waterWorkerName} numberOfLines={1}>{workerName}</Text>
+                      </View>
+                    );
+                  })}
+                  {Object.keys(effectiveSensors).length === 0 && (
+                    <Text style={styles.emptyText}>No water level data available.</Text>
+                  )}
+                </View>
+              </View>
+            </View>
+
+            {/* Gas Trend */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📉 Gas Concentration Trend</Text>
+              <Text style={styles.sectionSub}>Select gas · Colour-coded by threshold level</Text>
+
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.gasTabRow}>
+                {GAS_CONFIG.map(g => {
+                  const active = selectedGas === g.key;
+                  return (
+                    <TouchableOpacity
+                      key={g.key}
+                      onPress={() => setSelectedGas(g.key)}
+                      style={[styles.gasTab, active && { backgroundColor: g.color, borderColor: g.color }]}
+                    >
+                      <Text style={[styles.gasTabText, active && { color: '#fff' }]}>{g.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <GasLineChart data={gasTrendData} cfg={selectedGasCfg} />
+
+              {/* Threshold legend */}
+              <View style={styles.thresholdLegend}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.safe }]} />
+                  <Text style={styles.legendText}>L1 Safe ≤{selectedGasCfg.l1}{selectedGasCfg.unit}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.caution }]} />
+                  <Text style={styles.legendText}>L2 Caution ≤{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.danger }]} />
+                  <Text style={styles.legendText}>L3 Danger >{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Gas by Zone */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>📍 Gas by Zone / Sewer Line</Text>
+              {gasStats.length === 0
+                ? <Text style={styles.emptyText}>No gas readings for this period.</Text>
+                : gasStats.map((z, i) => (
+                  <View key={i} style={styles.gasZoneRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.gasZoneName}>{z.zone}</Text>
+                      <Text style={styles.gasZoneMeta}>{z.sewerLine} · {z.readingsCount} readings</Text>
+                    </View>
+                    <View style={styles.gasZonePills}>
+                      {[
+                        { key: 'co',  val: z.avgCo  },
+                        { key: 'ch4', val: z.avgCh4 },
+                      ].map(({ key, val }) => {
+                        const lvl = gasLevel(key, val);
+                        return val != null ? (
+                          <View key={key} style={[styles.gasMiniPill, { backgroundColor: LEVEL_BG[lvl] }]}>
+                            <Text style={[styles.gasMiniPillText, { color: LEVEL_COLORS[lvl] }]}>
+                              {key.toUpperCase()} {val}
+                            </Text>
+                          </View>
+                        ) : null;
+                      })}
+                    </View>
+                  </View>
+                ))
+              }
+            </View>
+          </>
+        )}
+
+        {/* ═══════════════ COMPLIANCE TAB ═══════════════ */}
+        {activeTab === 'compliance' && (
+          <>
+            {/* Main compliance score */}
+            <View style={[styles.section, styles.complianceHero]}>
+              <MaterialCommunityIcons name="shield-check" size={32} color={Colors.accent} />
+              <Text style={styles.complianceTitle}>Safety Compliance</Text>
+              <Text style={[styles.complianceScore, {
+                color: resolutionRate >= 90 ? Colors.success
+                  : resolutionRate >= 70 ? Colors.warning
+                  : Colors.danger,
+              }]}>
+                {resolutionRate}%
+              </Text>
+              <Text style={styles.complianceSub}>Alert resolution rate this {period}</Text>
+
+              <View style={styles.complianceBarTrack}>
+                <View style={[styles.complianceBarFill, {
+                  width: `${resolutionRate}%`,
+                  backgroundColor: resolutionRate >= 90 ? Colors.success
+                    : resolutionRate >= 70 ? Colors.warning
+                    : Colors.danger,
+                }]} />
+              </View>
+
+              <Text style={styles.complianceNote}>
+                {resolutionRate >= 90 ? '✅ Excellent compliance — keep it up!'
+                  : resolutionRate >= 70 ? '⚠️ Needs improvement — address open alerts'
+                  : '❌ Critical — immediate attention required'}
+              </Text>
+            </View>
+
+            {/* Gas compliance per type */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🧪 Gas Safety Compliance</Text>
+              <Text style={styles.sectionSub}>% of readings within safe threshold (L1)</Text>
+              {GAS_CONFIG.map(g => {
+                const vals = periodGasReadings.map(r => (r as any)[g.key] as number | null).filter((v): v is number => v != null && v > 0);
+                const safeCount = vals.filter(v => gasLevel(g.key, v) === 'safe').length;
+                const pct = vals.length ? Math.round((safeCount / vals.length) * 100) : 100;
+                const color = pct >= 90 ? Colors.success : pct >= 70 ? Colors.warning : Colors.danger;
+                return (
+                  <View key={g.key} style={styles.complianceGasRow}>
+                    <Text style={styles.complianceGasLabel}>{g.label}</Text>
+                    <View style={styles.complianceGasBarTrack}>
+                      <View style={[styles.complianceGasBarFill, {
+                        width: `${pct}%`,
+                        backgroundColor: color,
+                      }]} />
+                    </View>
+                    <Text style={[styles.complianceGasPct, { color }]}>{vals.length ? `${pct}%` : 'N/A'}</Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* Zone compliance */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🗺️ Zone Compliance</Text>
+              {zoneRows.length === 0
+                ? <Text style={styles.emptyText}>No zone data available.</Text>
+                : zoneRows.map(zone => {
+                  const color = zone.resolvedRate === 100 ? Colors.success
+                    : zone.resolvedRate > 70 ? Colors.warning : Colors.danger;
+                  return (
+                    <View key={zone.name} style={styles.complianceZoneRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.complianceZoneName}>{zone.name}</Text>
+                        <Text style={styles.complianceZoneMeta}>{zone.workers} workers · {zone.alerts} alerts</Text>
+                      </View>
+                      <View style={styles.complianceZoneRight}>
+                        <Text style={[styles.complianceZonePct, { color }]}>{zone.resolvedRate}%</Text>
+                        <Text style={[styles.complianceZoneStatus, { color }]}>
+                          {zone.resolvedRate === 100 ? 'Compliant' : zone.resolvedRate > 70 ? 'Partial' : 'Critical'}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })
+              }
+            </View>
+          </>
+        )}
+
+        <View style={{ height: 32 }} />
       </ScrollView>
 
-      <Modal
-        visible={showExportModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowExportModal(false)}
-      >
+      {/* ── Export Modal (web) ── */}
+      <Modal visible={showExportModal} transparent animationType="fade" onRequestClose={() => setShowExportModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowExportModal(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Export Report</Text>
-            <Text style={styles.modalSub}>Choose a format for the {period} report.</Text>
-
-            <TouchableOpacity style={styles.modalBtn} onPress={() => void runExport('pdf')}>
-              <MaterialCommunityIcons name="file-pdf-box" size={18} color={Colors.primary} />
-              <Text style={styles.modalBtnText}>Export PDF</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.modalBtn} onPress={() => void runExport('csv')}>
-              <MaterialCommunityIcons name="file-delimited" size={18} color={Colors.primary} />
-              <Text style={styles.modalBtnText}>Export CSV</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.modalBtn} onPress={() => void runExport('both')}>
-              <MaterialCommunityIcons name="download-multiple" size={18} color={Colors.primary} />
-              <Text style={styles.modalBtnText}>Export Both</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.modalBtn, { justifyContent: 'center' }]}
-              onPress={() => setShowExportModal(false)}
-            >
+            <Text style={styles.modalSub}>Select format for the {period} report.</Text>
+            {[
+              { label: 'Export as PDF',  icon: 'file-pdf-box',     fmt: 'pdf'  as const },
+              { label: 'Export as CSV',  icon: 'file-delimited',   fmt: 'csv'  as const },
+              { label: 'Export Both',    icon: 'download-multiple', fmt: 'both' as const },
+            ].map(o => (
+              <TouchableOpacity key={o.fmt} style={styles.modalBtn} onPress={() => void runExport(o.fmt)}>
+                <MaterialCommunityIcons name={o.icon as any} size={20} color={Colors.primary} />
+                <Text style={styles.modalBtnText}>{o.label}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={[styles.modalBtn, { justifyContent: 'center', marginTop: 4 }]} onPress={() => setShowExportModal(false)}>
               <Text style={[styles.modalBtnText, { color: Colors.textSecondary }]}>Cancel</Text>
             </TouchableOpacity>
           </Pressable>
@@ -1569,424 +1534,275 @@ export default function ReportsScreen() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
+  safeArea: { flex: 1, backgroundColor: '#F1F5F9' },
 
+  // SAMVED Header
   header: {
     paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.sm,
+    paddingVertical: 11,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    backgroundColor: '#162A47',
   },
-
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: Colors.text,
+  headerLeft: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1,
   },
-
-  headerSub: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 2,
+  headerIconWrap: {
+    width: 40, height: 40, borderRadius: 10,
+    backgroundColor: '#E8600A',
+    alignItems: 'center', justifyContent: 'center',
   },
+  headerTitle: { fontSize: 16, fontWeight: '900', color: '#fff', letterSpacing: 1.5 },
+  headerSub:   { fontSize: 10, color: '#7B9FC7', marginTop: 1 },
+  headerRight: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+  },
+  liveBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    borderWidth: 1.5, borderColor: '#22C55E',
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  liveBadgeDot: {
+    width: 6, height: 6, borderRadius: 3, backgroundColor: '#22C55E',
+  },
+  liveBadgeText: { fontSize: 11, color: '#22C55E', fontWeight: '800', letterSpacing: 0.5 },
+  sensorCountBadge: {
+    backgroundColor: '#1E3A5F',
+    paddingHorizontal: 8, paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  sensorCountText: { fontSize: 11, color: '#7B9FC7', fontWeight: '700' },
 
   exportBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: '#1E3A5F',
+    paddingHorizontal: 10, paddingVertical: 7,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1, borderColor: '#2D5080',
+  },
+  exportBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+
+  // Period
+  periodRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 14,
+    paddingHorizontal: Spacing.md,
     paddingVertical: 10,
-    borderRadius: BorderRadius.lg,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
   },
-
-  exportBtnDisabled: {
-    opacity: 0.7,
+  periodBtn: {
+    paddingHorizontal: 14, paddingVertical: 7,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1, borderColor: '#CBD5E1',
+    backgroundColor: '#fff',
   },
+  periodBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  periodText:      { fontSize: 13, color: '#64748B', fontWeight: '600' },
+  periodTextActive:{ color: '#fff' },
 
-  exportBtnText: {
-    color: Colors.white,
-    fontWeight: '600',
+  // Tab bar
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
   },
+  tabItem: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 4, paddingVertical: 10,
+    borderBottomWidth: 2, borderBottomColor: 'transparent',
+  },
+  tabItemActive: { borderBottomColor: Colors.primary },
+  tabLabel:      { fontSize: 11, color: '#94A3B8', fontWeight: '600' },
+  tabLabelActive:{ color: Colors.primary },
 
-  card: {
-    backgroundColor: Colors.white,
+  // Scroll
+  scrollContent: { padding: Spacing.md, gap: Spacing.md },
+
+  // Section
+  section: {
+    backgroundColor: '#fff',
     borderRadius: BorderRadius.xl,
     padding: 16,
     ...Shadows.sm,
   },
+  sectionTitle: { fontSize: 17, fontWeight: '700', color: '#0F172A', marginBottom: 2 },
+  sectionSub:   { fontSize: 12, color: '#64748B', marginBottom: 12 },
+  emptyText:    { fontSize: 13, color: '#94A3B8', textAlign: 'center', paddingVertical: 12 },
 
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.text,
-    marginBottom: 4,
+  // Summary
+  summaryRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4,
   },
-
-  cardSub: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginBottom: 12,
-  },
-
-  periodRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-
-  periodBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: Colors.white,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-
-  periodBtnActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-
-  periodText: {
-    color: Colors.textSecondary,
-    fontWeight: '600',
-  },
-
-  periodTextActive: {
-    color: Colors.white,
-  },
-
-  liveNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.successBg,
-    padding: 12,
+  summaryCard: {
+    flex: 1, minWidth: '22%',
+    backgroundColor: '#F8FAFC',
     borderRadius: BorderRadius.lg,
+    padding: 12, alignItems: 'center',
   },
+  summaryValue: { fontSize: 18, fontWeight: '800', marginTop: 6 },
+  summaryLabel: { fontSize: 10, color: '#64748B', marginTop: 3, textAlign: 'center' },
 
-  liveNoticeText: {
-    color: Colors.success,
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '500',
-  },
+  // Alert breakdown
+  alertRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  alertRowLabel:  { width: 80, fontSize: 12, fontWeight: '600', color: '#334155' },
+  alertBarTrack:  { flex: 1, height: 8, backgroundColor: '#F1F5F9', borderRadius: 4, overflow: 'hidden' },
+  alertBarFill:   { height: '100%', borderRadius: 4 },
+  alertRowCount:  { width: 28, textAlign: 'right', fontWeight: '700', fontSize: 13 },
 
-  summaryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-
-  summaryItem: {
-    width: '47%',
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadius.lg,
-    padding: 14,
-    alignItems: 'center',
-  },
-
-  summaryValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginTop: 8,
-  },
-
-  summaryLabel: {
-    marginTop: 4,
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-
-  liveWorkerCard: {
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadius.lg,
-    padding: 14,
-  },
-
-  liveWorkerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    gap: 10,
-  },
-
-  liveWorkerName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-
-  liveWorkerMeta: {
-    marginTop: 2,
-    color: Colors.textSecondary,
-    fontSize: 12,
-  },
-
-  liveStatusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-  },
-
-  liveStatusText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
-  liveWorkerGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-
-  liveMetric: {
-    width: '30%',
-    backgroundColor: Colors.white,
-    borderRadius: BorderRadius.md,
-    padding: 10,
-  },
-
-  liveMetricLabel: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-
-  liveMetricValue: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  liveWorkerFooter: {
-    marginTop: 10,
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-
-  alertRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 12,
-  },
-
-  alertRowLabel: {
-    width: 90,
-    fontSize: 13,
-    color: Colors.text,
-    fontWeight: '600',
-  },
-
-  alertBarTrack: {
-    flex: 1,
-    height: 8,
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadius.full,
-    overflow: 'hidden',
-  },
-
-  alertBar: {
-    height: '100%',
-    borderRadius: BorderRadius.full,
-  },
-
-  alertRowCount: {
-    width: 32,
-    textAlign: 'right',
-    fontWeight: '700',
-  },
-
-  legendRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 8,
-  },
-
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-
-  legendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-  },
-
-  legendText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-
-  gasTab: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.white,
-  },
-
-  gasTabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-
+  // Zone
   zoneRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
   },
+  zoneRowName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  zoneRowMeta: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  rateChip:    { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  rateText:    { fontSize: 12, fontWeight: '800' },
 
-  zoneRowLeft: {
-    flex: 1,
-  },
-
-  zoneRowName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-
-  zoneRowMeta: {
-    marginTop: 2,
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-
-  rateChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-  },
-
-  rateText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-
-  complianceHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-
-  complianceScore: {
-    fontSize: 40,
-    fontWeight: '800',
-    marginTop: 10,
-  },
-
-  complianceBar: {
-    height: 10,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: BorderRadius.full,
-    marginTop: 12,
-    overflow: 'hidden',
-  },
-
-  complianceFill: {
-    height: '100%',
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.full,
-  },
-
-  complianceNote: {
-    marginTop: 10,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-
-  logRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: Colors.background,
+  // Live worker card
+  liveWorkerCard: {
+    backgroundColor: '#F8FAFC',
     borderRadius: BorderRadius.lg,
-    padding: 12,
+    padding: 14, marginBottom: 10,
+    borderLeftWidth: 3,
   },
-
-  logTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.text,
+  liveWorkerTop:  { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  liveWorkerName: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  liveWorkerMeta: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  statusPill:     { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  statusDot:      { width: 6, height: 6, borderRadius: 3 },
+  statusPillText: { fontSize: 10, fontWeight: '800' },
+  metricsGrid:    { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  metricCell: {
+    width: '30%', borderRadius: BorderRadius.md, padding: 8, alignItems: 'center',
   },
+  metricCellLabel: { fontSize: 10, color: '#64748B', marginTop: 3, marginBottom: 1 },
+  metricCellValue: { fontSize: 13, fontWeight: '700' },
+  liveWorkerFooter:{ marginTop: 10, fontSize: 11, color: '#94A3B8' },
 
-  logMeta: {
-    marginTop: 2,
-    fontSize: 12,
-    color: Colors.textSecondary,
+  // Gauges
+  gaugeRow: { gap: 12, paddingVertical: 8 },
+  gaugeBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20, marginTop: 4,
   },
+  gaugeDot:       { width: 6, height: 6, borderRadius: 3 },
+  gaugeBadgeText: { fontSize: 9, fontWeight: '800' },
+  gaugeLabel:     { fontSize: 11, color: '#475569', marginTop: 3, fontWeight: '600' },
+  gaugeLegendRow: { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 10 },
+  legendItem:     { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDot:      { width: 8, height: 8, borderRadius: 4 },
+  legendLine:     { width: 16, height: 3, borderRadius: 2 },
+  legendText:     { fontSize: 11, color: '#64748B' },
 
-  statusChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
+  // Gas level card
+  gasLevelCard: {
+    borderLeftWidth: 4,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: '#F8FAFC',
+    padding: 14, marginBottom: 10,
   },
+  gasLevelHeader:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  gasLevelBadge:       { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  gasLevelBadgeText:   { fontSize: 13, fontWeight: '700' },
+  gasCurrentVal:       { fontSize: 18, fontWeight: '800' },
+  gasLevelBars:        { gap: 6, marginBottom: 10 },
+  gasLevelRow:         { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gasLevelLbl:         { width: 70, fontSize: 10, color: '#64748B', fontWeight: '600' },
+  gasLevelTrack:       { flex: 1, height: 7, backgroundColor: '#E2E8F0', borderRadius: 4, overflow: 'hidden' },
+  gasLevelFill:        { height: '100%', borderRadius: 4 },
+  gasLevelCount:       { width: 20, textAlign: 'right', fontSize: 11, fontWeight: '700' },
+  gasStatRow:          { flexDirection: 'row', gap: 12 },
+  gasStat:             { alignItems: 'center' },
+  gasStatLbl:          { fontSize: 10, color: '#94A3B8' },
+  gasStatVal:          { fontSize: 13, fontWeight: '700', color: '#334155' },
 
-  statusChipText: {
-    fontSize: 11,
-    fontWeight: '700',
+  // Gas trend tabs
+  gasTabRow:    { gap: 8, marginBottom: 14 },
+  gasTab: {
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: BorderRadius.full, borderWidth: 1, borderColor: '#CBD5E1',
+    backgroundColor: '#fff',
   },
+  gasTabText: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  thresholdLegend: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 },
 
+  // Water level
+  waterSection:   { marginTop: 16 },
+  waterRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 8 },
+  waterWorkerCell:{ alignItems: 'center', width: 64 },
+  waterBarWrap:   { alignItems: 'center', gap: 4 },
+  waterBarTrack: {
+    width: 20, height: 80, backgroundColor: '#E2E8F0', borderRadius: 10,
+    overflow: 'hidden', justifyContent: 'flex-end',
+  },
+  waterBarFill:    { width: '100%', borderRadius: 10 },
+  waterBarValue:   { fontSize: 10, fontWeight: '700', marginTop: 3 },
+  waterWorkerName: { fontSize: 10, color: '#64748B', marginTop: 4, textAlign: 'center', maxWidth: 64 },
+
+  // Gas zone row
+  gasZoneRow: {
+    flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', gap: 8,
+  },
+  gasZoneName:  { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  gasZoneMeta:  { fontSize: 11, color: '#64748B', marginTop: 1 },
+  gasZonePills: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, maxWidth: '55%', justifyContent: 'flex-end' },
+  gasMiniPill:  { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8 },
+  gasMiniPillText: { fontSize: 10, fontWeight: '700' },
+
+  // Compliance
+  complianceHero: { alignItems: 'center', paddingVertical: 20 },
+  complianceTitle: { fontSize: 18, fontWeight: '700', color: '#0F172A', marginTop: 8 },
+  complianceScore: { fontSize: 56, fontWeight: '900', marginVertical: 8 },
+  complianceSub:   { fontSize: 13, color: '#64748B', marginBottom: 16 },
+  complianceBarTrack: {
+    width: '100%', height: 12, backgroundColor: '#E2E8F0',
+    borderRadius: 6, overflow: 'hidden', marginBottom: 12,
+  },
+  complianceBarFill:  { height: '100%', borderRadius: 6 },
+  complianceNote:     { fontSize: 13, fontWeight: '600', color: '#475569', textAlign: 'center' },
+
+  complianceGasRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10,
+  },
+  complianceGasLabel:    { width: 40, fontSize: 12, fontWeight: '700', color: '#334155' },
+  complianceGasBarTrack: { flex: 1, height: 8, backgroundColor: '#F1F5F9', borderRadius: 4, overflow: 'hidden' },
+  complianceGasBarFill:  { height: '100%', borderRadius: 4 },
+  complianceGasPct:      { width: 36, textAlign: 'right', fontSize: 12, fontWeight: '700' },
+
+  complianceZoneRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
+  },
+  complianceZoneName:   { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  complianceZoneMeta:   { fontSize: 11, color: '#64748B', marginTop: 1 },
+  complianceZoneRight:  { alignItems: 'flex-end' },
+  complianceZonePct:    { fontSize: 20, fontWeight: '900' },
+  complianceZoneStatus: { fontSize: 10, fontWeight: '700' },
+
+  // Modal
   modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.45)',
-    justifyContent: 'center',
-    padding: 20,
+    flex: 1, backgroundColor: 'rgba(15,23,42,0.5)',
+    justifyContent: 'center', padding: 24,
   },
-
-  modalCard: {
-    backgroundColor: Colors.white,
-    borderRadius: BorderRadius.xl,
-    padding: 18,
-    ...Shadows.md,
-  },
-
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-
-  modalSub: {
-    marginTop: 4,
-    marginBottom: 16,
-    color: Colors.textSecondary,
-    fontSize: 13,
-  },
-
+  modalCard:    { backgroundColor: '#fff', borderRadius: BorderRadius.xl, padding: 20, ...Shadows.md },
+  modalTitle:   { fontSize: 18, fontWeight: '700', color: '#0F172A' },
+  modalSub:     { fontSize: 13, color: '#64748B', marginTop: 4, marginBottom: 16 },
   modalBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
   },
-
-  modalBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.text,
-  },
+  modalBtnText: { fontSize: 14, fontWeight: '600', color: '#1E293B' },
 });
 
 export { buildReportHtml, buildReportCsv };

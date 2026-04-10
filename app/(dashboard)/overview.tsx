@@ -623,16 +623,45 @@ const gc = StyleSheet.create({
 });
 
 // ── WATER LEVEL TRENDS CARD ───────────────────────────────────
-function WaterTrendCard({ sensor }: { sensor?: SensorData | null }) {
+function WaterTrendCard({ sensor, workerId }: { sensor?: SensorData | null; workerId?: string }) {
   const [history, setHistory] = useState(Array(20).fill({ waterLevel: 0 }));
+  const [preMonitorWater, setPreMonitorWater] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!workerId) {
+      setPreMonitorWater(null);
+      return;
+    }
+    const preRef = ref(rtdb, `sensors/${workerId}/pre_monitor`);
+    const unsub = onValue(preRef, (snap) => {
+      if (!snap.exists()) {
+        setPreMonitorWater(null);
+        return;
+      }
+      const raw = snap.val() || {};
+      const levels = [raw.level1_water, raw.level2_water, raw.level3_water]
+        .map((v: any) => normalizeWaterCm(v))
+        .filter((v) => Number.isFinite(v) && v >= 0);
+      if (levels.length === 0) {
+        setPreMonitorWater(null);
+        return;
+      }
+      // Track the highest sampled water level during pre-monitoring for trend visibility.
+      setPreMonitorWater(Math.max(...levels));
+    });
+    return () => off(preRef);
+  }, [workerId]);
+
   useEffect(() => {
     if (!sensor) return;
-    setHistory(prev => [...prev.slice(1), { waterLevel: normalizeWaterCm(sensor.waterLevel || 0) }]);
-  }, [sensor?.lastUpdated]);
+    const liveLevel = normalizeWaterCm(sensor.waterLevel || 0);
+    const effectiveLevel = sensor.mode === 'premonitoring' ? (preMonitorWater ?? liveLevel) : liveLevel;
+    setHistory(prev => [...prev.slice(1), { waterLevel: effectiveLevel }]);
+  }, [sensor?.lastUpdated, sensor?.mode, preMonitorWater]);
 
   const chartW = Math.min(SCREEN_WIDTH - 80, 400);
   const chartH = 90;
-  const maxVal = 300; // Max 300 cm for display
+  const maxVal = Math.max(50, ...history.map((h) => h.waterLevel));
 
   return (
     <View style={wt.card}>
@@ -648,8 +677,8 @@ function WaterTrendCard({ sensor }: { sensor?: SensorData | null }) {
       </View>
       <View style={[wt.chartArea, { height: chartH + 8 }]}>
         <View style={wt.yLabels}>
-          <Text style={wt.yLabel}>300 cm</Text>
-          <Text style={wt.yLabel}>150 cm</Text>
+          <Text style={wt.yLabel}>{Math.round(maxVal)} cm</Text>
+          <Text style={wt.yLabel}>{Math.round(maxVal / 2)} cm</Text>
           <Text style={wt.yLabel}>0 cm</Text>
         </View>
         <View style={{ flex: 1, height: chartH, backgroundColor: '#FAFAFA', borderRadius: 4, overflow: 'hidden' }}>
@@ -703,12 +732,41 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
     { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0, water: data.level3_water ?? 0 },
   ] : [];
 
-  const ch4Status = (v: number) => v >= 200 ? 'danger' : v >= 100 ? 'warning' : 'safe';
-  const coStatus  = (v: number) => v >= 200  ? 'danger' : v >= 50   ? 'warning' : 'safe';
+  const ch4Status = (v: number) =>
+    v >= 20 ? 'danger' :
+    v >= 10 ? 'warning' : 'safe';
+  const coStatus  = (v: number) =>
+    v >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
+    v >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
   const waterStatus = (v: number) => {
-    const distanceCm = normalizeWaterCm(v);
-    return distanceCm <= SENSOR_THRESHOLDS.waterLevel.dangerMax ? 'danger' : distanceCm <= SENSOR_THRESHOLDS.waterLevel.warningMax ? 'warning' : 'safe';
+    const waterCm = normalizeWaterCm(v);
+    // In pre-monitoring, higher sampled water level means higher flooding risk.
+    return waterCm >= SENSOR_THRESHOLDS.waterLevel.warningMax ? 'danger' : waterCm >= SENSOR_THRESHOLDS.waterLevel.dangerMax ? 'warning' : 'safe';
   };
+
+  const levelVerdict = levels.reduce<'SAFE' | 'WARNING' | 'UNSAFE'>((acc, lv) => {
+    const ch4State = ch4Status(lv.ch4);
+    const coState = coStatus(lv.co);
+    if (ch4State === 'danger' || coState === 'danger') return 'UNSAFE';
+    if (ch4State === 'warning' || coState === 'warning' || acc === 'WARNING') return 'WARNING';
+    return acc;
+  }, 'SAFE');
+
+  const effectiveVerdict = verdict && verdict !== 'SAFE' ? verdict : levelVerdict;
+  const effectiveColor = effectiveVerdict === 'SAFE' ? '#2ECC71' : effectiveVerdict === 'WARNING' ? '#F39C12' : '#E74C3C';
+  const effectiveBg = effectiveVerdict === 'SAFE' ? '#E8F8F0' : effectiveVerdict === 'WARNING' ? '#FEF9E7' : '#FDEDEC';
+  const effectiveIcon = effectiveVerdict === 'SAFE' ? 'check-circle' : effectiveVerdict === 'WARNING' ? 'alert-circle' : 'close-circle';
+  const effectiveLabel = effectiveVerdict === 'SAFE' ? 'SAFE — Entry Permitted' : effectiveVerdict === 'WARNING' ? 'WARNING — Enter with Caution' : 'UNSAFE — DO NOT ENTER!';
+  const effectiveSub = effectiveVerdict === 'SAFE' ? 'Normal precautions apply.' : effectiveVerdict === 'WARNING' ? 'Full protective gear required.' : 'Dangerous gas levels detected.';
+
+  const maxCh4 = levels.length > 0 ? Math.max(...levels.map((l) => l.ch4 ?? 0)) : 0;
+  const maxCo = levels.length > 0 ? Math.max(...levels.map((l) => l.co ?? 0)) : 0;
+  const chip = (label: string, state: SafetyStatus) => (
+    <View style={[pm.statusChip, { backgroundColor: STATUS_BG[state] }]}>
+      <View style={[pm.statusDot, { backgroundColor: STATUS_COLOR[state] }]} />
+      <Text style={[pm.statusChipText, { color: STATUS_COLOR[state] }]}>{label}: {state === 'danger' ? 'Danger' : state === 'warning' ? 'Warning' : 'Safe'}</Text>
+    </View>
+  );
 
   return (
     <View style={pm.card}>
@@ -718,20 +776,27 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
       </View>
 
       {/* Verdict banner */}
-      <View style={[pm.verdict, { backgroundColor: vBg, borderColor: vColor }]}>
-        <MaterialCommunityIcons name={vIcon as any} size={26} color={vColor} />
+      <View style={[pm.verdict, { backgroundColor: effectiveBg, borderColor: effectiveColor }]}>
+        <MaterialCommunityIcons name={effectiveIcon as any} size={26} color={effectiveColor} />
         <View style={{ flex: 1 }}>
-          <Text style={[pm.vLabel, { color: vColor }]}>{vLabel}</Text>
-          <Text style={pm.vSub}>{vSub}</Text>
+          <Text style={[pm.vLabel, { color: effectiveColor }]}>{effectiveLabel}</Text>
+          <Text style={pm.vSub}>{effectiveSub}</Text>
         </View>
       </View>
+
+      {levels.length > 0 && (
+        <View style={pm.statusRow}>
+          {chip('CH₄', ch4Status(maxCh4))}
+          {chip('CO', coStatus(maxCo))}
+        </View>
+      )}
 
       {/* 3-Level gas table */}
       {levels.length > 0 ? (
         <View style={pm.table}>
           <View style={pm.tableHead}>
             <Text style={[pm.th, { flex: 1 }]}>DEPTH</Text>
-            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (PPM)</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (% LEL)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CO (PPM)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>Water (cm)</Text>
           </View>
@@ -775,6 +840,10 @@ const pm = StyleSheet.create({
   verdict: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 8, padding: 12, borderWidth: 1.5, marginBottom: 12 },
   vLabel: { fontSize: 13, fontFamily: 'Poppins_700Bold' },
   vSub: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B', marginTop: 2 },
+  statusRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  statusChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  statusChipText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
   table: { borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: '#E2E8F0' },
   tableHead: { flexDirection: 'row', backgroundColor: '#1A3C6E', paddingVertical: 8, paddingHorizontal: 10 },
   th: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: '#B8C8D8', letterSpacing: 0.5 },
@@ -964,6 +1033,24 @@ export default function OverviewScreen() {
     })
     .filter((item): item is { id: string; workerName: string; type: 'SOS' | 'FALL'; zone: string; manholeId: string } => !!item);
 
+  const liveEmergencyAlerts: Alert[] = sensorEmergencies
+    .filter((se) => !alerts.some((a) => !a.resolved && a.workerName === se.workerName && a.type === se.type))
+    .map((se, idx) => ({
+      id: `sensor-live-${se.id}-${idx}`,
+      workerId: `sensor-live-${idx}`,
+      workerName: se.workerName,
+      type: se.type,
+      value: se.type === 'FALL' ? 'Fall Detected' : 'SOS Triggered',
+      zone: se.zone,
+      manholeId: se.manholeId,
+      timestamp: Date.now() as any,
+      resolved: false,
+      acknowledged: false,
+      escalationLevel: 'manager',
+    } as Alert));
+
+  const alertsForLog = [...liveEmergencyAlerts, ...alerts];
+
   const dateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const timeStr = now.toTimeString().slice(0, 8);
 
@@ -1068,25 +1155,7 @@ export default function OverviewScreen() {
           </Text>
         </TouchableOpacity>
       )}
-      {/* TEST SOUND BUTTON - Temporary for debugging */}
-      <TouchableOpacity 
-        style={{
-          position: 'absolute',
-          top: 70,
-          right: 20,
-          backgroundColor: '#9C27B0',
-          padding: 12,
-          borderRadius: 8,
-          zIndex: 9999,
-        }}
-        onPress={() => {
-          console.log('🧪 TEST BUTTON CLICKED');
-          playAlertSound({ id: 'test-' + Date.now(), type: 'SOS' }).catch(console.error);
-        }}
-      >
-        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>🔊 TEST SOUND</Text>
-      </TouchableOpacity>
-
+      
       {/* WORKER SELECTOR - With swipe support */}
       {workers.length > 0 && (
         <View {...panResponder.current?.panHandlers} style={main.workerBar}>
@@ -1136,7 +1205,7 @@ export default function OverviewScreen() {
             <View style={main.col1}>
               <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
               <GasTrendCard sensor={activeSensor} />
-              <WaterTrendCard sensor={activeSensor} />
+              <WaterTrendCard sensor={activeSensor} workerId={selectedWorkerId ?? workers[0]?.id} />
             </View>
             <View style={main.col2}>
               <WorkerConditionCard
@@ -1159,7 +1228,7 @@ export default function OverviewScreen() {
               <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
             </View>
             <View style={main.col3}>
-              <AlertsLogCard alerts={alerts} />
+              <AlertsLogCard alerts={alertsForLog} />
               <ThresholdCard sensor={activeSensor} />
             </View>
           </View>
@@ -1185,7 +1254,7 @@ export default function OverviewScreen() {
             <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
             <WaterTrendCard sensor={activeSensor} />
-            <AlertsLogCard alerts={alerts} />
+            <AlertsLogCard alerts={alertsForLog} />
             <ThresholdCard sensor={activeSensor} />
             <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
           </View>

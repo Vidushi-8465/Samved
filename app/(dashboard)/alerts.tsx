@@ -1,14 +1,12 @@
 // app/(dashboard)/alerts.tsx
-import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Animated, Dimensions, Platform } from 'react-native';
+import React, { useRef, useState } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Timestamp } from 'firebase/firestore';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import { resolveAlert, acknowledgeAlert, Alert as AlertType } from '@/services/sensorService';
-import { playAlertSound } from '@/utils/alertSound';
 
 const ALERT_ICONS: Record<string, string> = {
   SOS: 'alarm-light',
@@ -30,36 +28,47 @@ const ALERT_COLORS: Record<string, string> = {
 
 const FILTERS = ['All', 'SOS', 'Gas', 'Temperature', 'Unresolved'];
 
+function WarningBanner({ alerts }: { alerts: AlertType[] }) {
+  const [dismissed, setDismissed] = useState(false);
+
+  const warningAlerts = alerts.filter(
+    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE'].includes(a.type)
+  );
+
+  if (warningAlerts.length === 0 || dismissed) return null;
+
+  return (
+    <View style={bannerStyles.container}>
+      {warningAlerts.map((alert, index) => (
+        <View key={alert.id} style={[bannerStyles.row, index < warningAlerts.length - 1 && bannerStyles.rowBorder]}>
+          <View style={bannerStyles.dot} />
+          <MaterialCommunityIcons
+            name={alert.type === 'TEMPERATURE' ? 'thermometer-alert' : 'gas-cylinder'}
+            size={16}
+            color="#BA7517"
+          />
+          <Text style={bannerStyles.text} numberOfLines={1}>
+            {alert.type === 'GAS_HIGH' ? 'High gas levels' : 'Temperature warning'} — {alert.zone}, {alert.workerName}
+          </Text>
+          <View style={bannerStyles.label}>
+            <Text style={bannerStyles.labelText}>{alert.type.replace('_', ' ')}</Text>
+          </View>
+          {index === warningAlerts.length - 1 && (
+            <TouchableOpacity onPress={() => setDismissed(true)} style={bannerStyles.close}>
+              <Text style={bannerStyles.closeText}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function AlertsScreen() {
   const { language, alerts, manager, setAlerts } = useStore();
   const T = getText(language);
   const [activeFilter, setActiveFilter] = useState('All');
   const seenAlertIds = useRef<Set<string>>(new Set());
-
-  // useEffect(() => {
-  //   if (alerts.length === 0) return;
-
-  //   if (seenAlertIds.current.size === 0) {
-  //     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
-  //     return;
-  //   }
-
-  //   const newAlert = [...alerts]
-  //     .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
-  //     .sort((left, right) => {
-  //       const leftTs = (left.timestamp as any)?.toMillis?.() ?? 0;
-  //       const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
-  //       return rightTs - leftTs;
-  //     })[0];
-
-  //   if (newAlert) {
-  //     playAlertSound(newAlert).catch((error) => {
-  //       console.warn('Failed to play alert sound:', error);
-  //     });
-  //   }
-
-  //   seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
-  // }, [alerts]);
 
   const filtered = alerts.filter(a => {
     if (activeFilter === 'All') return true;
@@ -155,6 +164,9 @@ export default function AlertsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <WarningBanner alerts={alerts} />
+      {/* your existing red SOS banner goes here */}
+
       <View style={styles.header}>
         <View>
           <Text style={styles.headerTitle}>{T.dashboard.alerts}</Text>
@@ -250,6 +262,59 @@ export default function AlertsScreen() {
     </SafeAreaView>
   );
 }
+
+const bannerStyles = StyleSheet.create({
+  container: {
+    backgroundColor: '#FAEEDA',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#EF9F27',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  rowBorder: {
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#FAC775',
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#BA7517',
+    flexShrink: 0,
+  },
+  text: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
+    color: '#633806',
+  },
+  label: {
+    backgroundColor: '#FAC775',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    flexShrink: 0,
+  },
+  labelText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#854F0B',
+  },
+  close: {
+    paddingHorizontal: 4,
+    flexShrink: 0,
+  },
+  closeText: {
+    fontSize: 16,
+    color: '#854F0B',
+    lineHeight: 20,
+  },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },

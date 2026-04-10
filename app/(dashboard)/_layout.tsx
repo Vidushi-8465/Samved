@@ -23,6 +23,7 @@ const TAB_ROUTES = [
   { key: 'zones', path: '/(dashboard)/zones' },
   { key: 'reports', path: '/(dashboard)/reports' },
   { key: 'samved', path: '/(dashboard)/samved' },
+  { key: 'test', path: '/(dashboard)/test' },
 ] as const;
 
 const { width } = Dimensions.get('window');
@@ -198,8 +199,7 @@ export default function DashboardLayout() {
           <Tabs.Screen
             name="test"
             options={{
-              href: null,
-              title: 'Test',
+              title: 'tes',
               tabBarIcon: ({ focused, color }) => (
                 <TabIcon name="test-tube" focused={focused} color={color} />
               ),
