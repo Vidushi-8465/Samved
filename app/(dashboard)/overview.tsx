@@ -19,9 +19,25 @@ import { ref, onValue, off } from 'firebase/database';
 import { rtdb } from '@/services/firebase';
 import { playAlertSound } from '@/utils/alertSound';
 import { isHiddenWorker } from '@/constants/hiddenWorkers';
+import { THRESHOLDS } from './workers'; // ← import shared THRESHOLDS from workers
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type SobrietyState = 'sober' | 'alcohol';
+
+type ActiveThresholds = {
+  hrLow: number;
+  hrHigh: number;
+  spO2Min: number;
+  checkInMinutes: number;
+  buddyRequired: boolean;
+  label: string;
+};
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_COLOR: Record<SafetyStatus, string> = {
   safe: '#2ECC71',
@@ -56,7 +72,8 @@ function useRealTimeClock() {
   return now;
 }
 
-// SOS Modal
+// ─── SOS Modal ────────────────────────────────────────────────────────────────
+
 function SOSModal({ alerts, sensorEmergencies, visible, onDismiss }: {
   alerts: Alert[];
   sensorEmergencies: Array<{ id: string; workerName: string; type: 'SOS' | 'FALL'; zone: string; manholeId: string }>;
@@ -121,7 +138,8 @@ const ss = StyleSheet.create({
   btnText: { color: '#C0392B', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 });
 
-// Env Parameter Card
+// ─── Env Parameter Card ───────────────────────────────────────────────────────
+
 function EnvCard({ label, value, unit, status }: { label: string; value: string | number; unit: string; status: SafetyStatus }) {
   const s = status || 'safe';
   return (
@@ -151,7 +169,9 @@ const ec = StyleSheet.create({
   badgeText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
 });
 
-// Worker Condition Card
+// ─── Worker Condition Card ────────────────────────────────────────────────────
+// Now accepts activeThresholds prop so it shows the correct limits per sobriety state
+
 function WorkerConditionCard({
   sensor,
   workerEmployeeId,
@@ -160,6 +180,7 @@ function WorkerConditionCard({
   formatElapsed,
   worker,
   manager,
+  activeThresholds,
 }: {
   sensor?: SensorData | null;
   workerEmployeeId: string;
@@ -168,6 +189,7 @@ function WorkerConditionCard({
   formatElapsed: (seconds: number) => string;
   worker?: WorkerProfile | null;
   manager?: any;
+  activeThresholds: ActiveThresholds;
 }) {
   const [safeDuration, setSafeDuration] = React.useState<string | null>(null);
   const [loadingSafeDuration, setLoadingSafeDuration] = React.useState(false);
@@ -177,7 +199,6 @@ function WorkerConditionCard({
       setSafeDuration(null);
       return;
     }
-
     const fetchSafeDuration = async () => {
       setLoadingSafeDuration(true);
       const { predictSafeDuration } = await import('@/services/sensorService');
@@ -185,15 +206,30 @@ function WorkerConditionCard({
       setSafeDuration(duration);
       setLoadingSafeDuration(false);
     };
-
     fetchSafeDuration();
   }, [sensor?.heartRate, sensor?.spO2, sensor?.ch4, sensor?.h2s, worker?.id]);
+
   const status = sensor ? getSensorStatus(sensor) : null;
   const isActive = !!sensor;
   const isFall = sensor?.fallDetected;
   const isSOS = sensor?.sosTriggered;
   const posture = (sensor?.workerPosture ?? '').toLowerCase();
   const isInside = !!timer?.running;
+
+  // Determine HR status using active (sobriety-aware) thresholds
+  const hrValue = sensor?.heartRate ?? 0;
+  const spO2Value = sensor?.spO2 ?? 0;
+  const hrStatus: SafetyStatus =
+    hrValue <= 0 ? 'safe'
+    : hrValue < activeThresholds.hrLow || hrValue > activeThresholds.hrHigh ? 'danger'
+    : hrValue < activeThresholds.hrLow + 10 || hrValue > activeThresholds.hrHigh - 10 ? 'warning'
+    : 'safe';
+  const spO2Status: SafetyStatus =
+    spO2Value <= 0 ? 'safe'
+    : spO2Value < activeThresholds.spO2Min ? 'danger'
+    : spO2Value < activeThresholds.spO2Min + 2 ? 'warning'
+    : 'safe';
+
   return (
     <View style={wc.card}>
       <View style={wc.header}>
@@ -219,28 +255,48 @@ function WorkerConditionCard({
             : '—'}
         </Text>
       </View>
-      {/* Heart Rate + SpO2 vitals */}
+
+      {/* Heart Rate + SpO2 — using sobriety-aware thresholds */}
       <View style={wc.vitalsRow}>
         <View style={wc.vitalBox}>
-          <MaterialCommunityIcons name="heart-pulse" size={18}
-            color={status?.heartRate === 'danger' ? '#E74C3C' : status?.heartRate === 'warning' ? '#F39C12' : '#2ECC71'} />
-          <Text style={[wc.vitalVal,
-            { color: status?.heartRate === 'danger' ? '#E74C3C' : status?.heartRate === 'warning' ? '#F39C12' : '#1A202C' }]}>
-            {sensor?.heartRate ?? '—'}
+          <MaterialCommunityIcons name="heart-pulse" size={18} color={STATUS_COLOR[hrStatus]} />
+          <Text style={[wc.vitalVal, { color: STATUS_COLOR[hrStatus] }]}>
+            {hrValue > 0 ? hrValue : '—'}
           </Text>
           <Text style={wc.vitalUnit}>BPM</Text>
+          <Text style={wc.vitalHint}>
+            {activeThresholds.hrLow}–{activeThresholds.hrHigh} bpm
+          </Text>
         </View>
         <View style={wc.vitalDivider} />
         <View style={wc.vitalBox}>
-          <MaterialCommunityIcons name="lungs" size={18}
-            color={status?.spO2 === 'danger' ? '#E74C3C' : status?.spO2 === 'warning' ? '#F39C12' : '#2ECC71'} />
-          <Text style={[wc.vitalVal,
-            { color: status?.spO2 === 'danger' ? '#E74C3C' : status?.spO2 === 'warning' ? '#F39C12' : '#1A202C' }]}>
-            {sensor?.spO2 ?? '—'}
+          <MaterialCommunityIcons name="lungs" size={18} color={STATUS_COLOR[spO2Status]} />
+          <Text style={[wc.vitalVal, { color: STATUS_COLOR[spO2Status] }]}>
+            {spO2Value > 0 ? spO2Value : '—'}
           </Text>
           <Text style={wc.vitalUnit}>SpO2 %</Text>
+          <Text style={wc.vitalHint}>
+            min {activeThresholds.spO2Min}%
+          </Text>
         </View>
       </View>
+
+      {/* Sobriety threshold indicator */}
+      <View style={[wc.sobrietyBar, {
+        backgroundColor: activeThresholds.buddyRequired ? '#FEF9E7' : '#E8F8F0',
+        borderColor: activeThresholds.buddyRequired ? '#F39C12' : '#2ECC71',
+      }]}>
+        <MaterialCommunityIcons
+          name={activeThresholds.buddyRequired ? 'alert-circle-outline' : 'shield-check'}
+          size={14}
+          color={activeThresholds.buddyRequired ? '#F39C12' : '#2ECC71'}
+        />
+        <Text style={[wc.sobrietyBarText, { color: activeThresholds.buddyRequired ? '#E67E22' : '#27AE60' }]}>
+          {activeThresholds.label} · Check-in every {activeThresholds.checkInMinutes} min
+          {activeThresholds.buddyRequired ? ' · Buddy required' : ''}
+        </Text>
+      </View>
+
       <View style={[wc.fallBox, { backgroundColor: isFall ? '#FDEDEC' : '#E8F8F0', borderColor: isFall ? '#E74C3C' : '#2ECC71' }]}>
         <View style={[wc.dot, { backgroundColor: isFall ? '#E74C3C' : '#2ECC71' }]} />
         <Text style={[wc.fallText, { color: isFall ? '#C0392B' : '#27AE60' }]}>
@@ -262,7 +318,7 @@ function WorkerConditionCard({
       </View>
 
       {safeDuration && (
-        <View style={[wc.safeDurationBox]}>
+        <View style={wc.safeDurationBox}>
           <MaterialCommunityIcons name="clock-check" size={18} color="#2ECC71" />
           <View style={{ flex: 1 }}>
             <Text style={wc.safeDurationLabel}>Safe Duration Estimate</Text>
@@ -303,10 +359,13 @@ const wc = StyleSheet.create({
   rowVal: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: '#1A202C' },
   dot: { width: 8, height: 8, borderRadius: 4 },
   vitalsRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#F0F4F8', paddingVertical: 12 },
-  vitalBox: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  vitalBox: { flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2 },
   vitalDivider: { width: 1, backgroundColor: '#E2E8F0' },
   vitalVal: { fontSize: 22, fontFamily: 'Poppins_700Bold' },
   vitalUnit: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: '#64748B' },
+  vitalHint: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#94A3B8' },
+  sobrietyBar: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, padding: 8, borderWidth: 1, marginTop: 8 },
+  sobrietyBarText: { fontSize: 11, fontFamily: 'Poppins_500Medium', flex: 1, flexWrap: 'wrap' },
   fallBox: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 8, padding: 12, marginTop: 10, borderWidth: 1 },
   fallText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   sysBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 8, padding: 12, marginTop: 6 },
@@ -315,35 +374,18 @@ const wc = StyleSheet.create({
   safeDurationBox: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 8, padding: 12, marginTop: 6, backgroundColor: '#E8F8F0', borderWidth: 1, borderColor: '#2ECC71' },
   safeDurationLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B' },
   safeDurationValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: '#27AE60', marginTop: 2 },
-  timerSection: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
+  timerSection: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#E2E8F0', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   timerMeta: { flex: 1 },
   timerLabel: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: '#64748B', letterSpacing: 0.4 },
   timerValue: { fontSize: 20, fontFamily: 'Poppins_700Bold', marginTop: 2 },
-  timerBtn: {
-    minWidth: 120,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
+  timerBtn: { minWidth: 120, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   timerBtnIn: { backgroundColor: '#1A3C6E' },
   timerBtnOut: { backgroundColor: '#E74C3C' },
   timerBtnText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: '#fff' },
 });
 
-// System Status Card
+// ─── System Status Card ───────────────────────────────────────────────────────
+
 function SystemStatusCard({ sensor, managerName }: { sensor?: SensorData | null; managerName: string }) {
   const [uptime, setUptime] = useState('00:00:00');
   const startRef = useRef(Date.now());
@@ -392,7 +434,8 @@ const sys = StyleSheet.create({
   val: { fontSize: 13, fontFamily: 'Poppins_500Medium' },
 });
 
-// Alerts & Logs Card
+// ─── Alerts & Logs Card ───────────────────────────────────────────────────────
+
 function AlertsLogCard({ alerts }: { alerts: Alert[] }) {
   const ALERT_COLOR = {
     SOS:'#C0392B', FALL:'#C0392B', CH4_CRITICAL:'#C0392B', H2S_CRITICAL:'#C0392B',
@@ -453,11 +496,33 @@ const al = StyleSheet.create({
   emptyText: { fontSize: 13, color: '#64748B', fontFamily: 'Poppins_400Regular' },
 });
 
-// Threshold Status Card
-function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
+// ─── Threshold Status Card ────────────────────────────────────────────────────
+// Accepts activeThresholds so HR and SpO2 rows reflect sobriety-adjusted limits
+
+function ThresholdCard({ sensor, activeThresholds }: {
+  sensor?: SensorData | null;
+  activeThresholds: ActiveThresholds;
+}) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const coValue = sensor?.co ?? sensor?.h2s ?? 0;
   const hasFall = !!sensor?.fallDetected || !!sensor?.sosTriggered;
+
+  const hrValue = sensor?.heartRate ?? 0;
+  const spO2Value = sensor?.spO2 ?? 0;
+
+  // Compute HR status using sobriety-aware thresholds
+  const hrStatus: SafetyStatus =
+    hrValue <= 0 ? 'safe'
+    : hrValue < activeThresholds.hrLow || hrValue > activeThresholds.hrHigh ? 'danger'
+    : hrValue < activeThresholds.hrLow + 10 || hrValue > activeThresholds.hrHigh - 10 ? 'warning'
+    : 'safe';
+
+  // Compute SpO2 status using sobriety-aware thresholds
+  const spO2Status: SafetyStatus =
+    spO2Value <= 0 ? 'safe'
+    : spO2Value < activeThresholds.spO2Min ? 'danger'
+    : spO2Value < activeThresholds.spO2Min + 2 ? 'warning'
+    : 'safe';
 
   const rows: Array<{
     label: string;
@@ -482,17 +547,19 @@ function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
     },
     {
       label: 'SpO₂',
-      current: sensor ? `${sensor.spO2}%` : 'No data',
-      statusLabel: !sensor ? 'No Data' : status?.spO2 === 'danger' ? 'Critical' : status?.spO2 === 'warning' ? 'Warning' : 'Safe',
-      limits: `Safe: ≥ ${SENSOR_THRESHOLDS.spO2.warningMin}%  |  Warning: ${SENSOR_THRESHOLDS.spO2.dangerMin}-${SENSOR_THRESHOLDS.spO2.warningMin - 1}%  |  Danger: < ${SENSOR_THRESHOLDS.spO2.dangerMin}%`,
-      st: status?.spO2 ?? 'safe',
+      current: sensor ? `${spO2Value}%` : 'No data',
+      statusLabel: !sensor ? 'No Data' : spO2Status === 'danger' ? 'Critical' : spO2Status === 'warning' ? 'Warning' : 'Safe',
+      // ← Uses sobriety-aware min
+      limits: `Safe: ≥ ${activeThresholds.spO2Min}%  |  Warning: ${activeThresholds.spO2Min - 2}-${activeThresholds.spO2Min - 1}%  |  Danger: < ${activeThresholds.spO2Min - 2}%`,
+      st: spO2Status,
     },
     {
       label: 'Heart Rate',
-      current: sensor ? `${sensor.heartRate} BPM` : 'No data',
-      statusLabel: !sensor ? 'No Data' : status?.heartRate === 'danger' ? 'Critical' : status?.heartRate === 'warning' ? 'Warning' : 'Safe',
-      limits: `Safe: ${SENSOR_THRESHOLDS.heartRate.warningLow}-${SENSOR_THRESHOLDS.heartRate.warningHigh} BPM  |  Warning: ${SENSOR_THRESHOLDS.heartRate.dangerLow}-${SENSOR_THRESHOLDS.heartRate.warningLow - 1} or ${SENSOR_THRESHOLDS.heartRate.warningHigh + 1}-${SENSOR_THRESHOLDS.heartRate.dangerHigh} BPM  |  Danger: < ${SENSOR_THRESHOLDS.heartRate.dangerLow} or > ${SENSOR_THRESHOLDS.heartRate.dangerHigh} BPM`,
-      st: status?.heartRate ?? 'safe',
+      current: sensor ? `${hrValue} BPM` : 'No data',
+      statusLabel: !sensor ? 'No Data' : hrStatus === 'danger' ? 'Critical' : hrStatus === 'warning' ? 'Warning' : 'Safe',
+      // ← Uses sobriety-aware HR limits
+      limits: `Safe: ${activeThresholds.hrLow}–${activeThresholds.hrHigh} BPM  |  Warning: near limits  |  Danger: < ${activeThresholds.hrLow} or > ${activeThresholds.hrHigh} BPM`,
+      st: hrStatus,
     },
     {
       label: 'Water Level',
@@ -515,6 +582,20 @@ function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
   return (
     <View style={th.card}>
       <Text style={th.title}>Threshold Status</Text>
+      {/* Sobriety mode label */}
+      <View style={[th.sobrietyRow, {
+        backgroundColor: activeThresholds.buddyRequired ? '#FEF9E7' : '#E8F8F0',
+        borderColor: activeThresholds.buddyRequired ? '#F39C12' : '#2ECC71',
+      }]}>
+        <MaterialCommunityIcons
+          name={activeThresholds.buddyRequired ? 'alert-circle-outline' : 'shield-check'}
+          size={13}
+          color={activeThresholds.buddyRequired ? '#F39C12' : '#2ECC71'}
+        />
+        <Text style={[th.sobrietyText, { color: activeThresholds.buddyRequired ? '#E67E22' : '#27AE60' }]}>
+          {activeThresholds.label}
+        </Text>
+      </View>
       {rows.map((r, i) => (
         <View key={r.label} style={[th.row, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
           <View style={th.rowTop}>
@@ -535,6 +616,8 @@ function ThresholdCard({ sensor }: { sensor?: SensorData | null }) {
 const th = StyleSheet.create({
   card: { backgroundColor: '#fff', borderRadius: 8, padding: 16, marginTop: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
   title: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: '#1A202C', marginBottom: 10 },
+  sobrietyRow: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 10 },
+  sobrietyText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
   row: { paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#F0F4F8', gap: 6 },
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   rowLabelWrap: { flex: 1, gap: 2 },
@@ -545,7 +628,8 @@ const th = StyleSheet.create({
   limitText: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#64748B', lineHeight: 15 },
 });
 
-// Gas Trend Chart
+// ─── Gas Trend Card ───────────────────────────────────────────────────────────
+
 function GasTrendCard({ sensor }: { sensor?: SensorData | null }) {
   const [history, setHistory] = useState(Array(20).fill({ ch4: 0, h2s: 0, co: 0 }));
   useEffect(() => {
@@ -556,23 +640,6 @@ function GasTrendCard({ sensor }: { sensor?: SensorData | null }) {
   const chartW = Math.min(SCREEN_WIDTH - 80, 400);
   const chartH = 90;
   const maxVal = 50;
-
-  const polyline = (key: 'ch4' | 'h2s' | 'co', color: string) => {
-    const pts = history.map((d, i) => {
-      const x = (i / (history.length - 1)) * chartW;
-      const y = chartH - (Math.min(d[key] || 0, maxVal) / maxVal) * chartH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>`;
-  };
-
-  const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${chartW}" height="${chartH}" viewBox="0 0 ${chartW} ${chartH}">
-    <line x1="0" y1="${chartH * 0.5}" x2="${chartW}" y2="${chartH * 0.5}" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="4 4"/>
-    <line x1="0" y1="0" x2="${chartW}" y2="0" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="4 4"/>
-    ${polyline('ch4','#2ECC71')}
-    ${polyline('h2s','#E67E22')}
-    ${polyline('co','#E74C3C')}
-  </svg>`;
 
   return (
     <View style={gc.card}>
@@ -595,7 +662,6 @@ function GasTrendCard({ sensor }: { sensor?: SensorData | null }) {
           <Text style={gc.yLabel}>0</Text>
         </View>
         <View style={{ flex: 1, height: chartH, backgroundColor: '#FAFAFA', borderRadius: 4, overflow: 'hidden' }}>
-          {/* Render chart as simple bars since SVG in RN requires react-native-svg */}
           {history.map((d, i) => (
             <View key={i} style={{ position: 'absolute', left: (i / (history.length - 1)) * (chartW - 8), bottom: 0, width: 2, flexDirection: 'column', justifyContent: 'flex-end', height: chartH }}>
               <View style={{ width: 2, height: Math.max(1, (d.ch4 / maxVal) * chartH), backgroundColor: '#2ECC7180', borderRadius: 1 }} />
@@ -622,31 +688,22 @@ const gc = StyleSheet.create({
   note: { fontSize: 10, color: '#94A3B8', fontFamily: 'Poppins_400Regular', marginTop: 4 },
 });
 
-// ── WATER LEVEL TRENDS CARD ───────────────────────────────────
+// ─── Water Trend Card ─────────────────────────────────────────────────────────
+
 function WaterTrendCard({ sensor, workerId }: { sensor?: SensorData | null; workerId?: string }) {
   const [history, setHistory] = useState(Array(20).fill({ waterLevel: 0 }));
   const [preMonitorWater, setPreMonitorWater] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!workerId) {
-      setPreMonitorWater(null);
-      return;
-    }
+    if (!workerId) { setPreMonitorWater(null); return; }
     const preRef = ref(rtdb, `sensors/${workerId}/pre_monitor`);
     const unsub = onValue(preRef, (snap) => {
-      if (!snap.exists()) {
-        setPreMonitorWater(null);
-        return;
-      }
+      if (!snap.exists()) { setPreMonitorWater(null); return; }
       const raw = snap.val() || {};
       const levels = [raw.level1_water, raw.level2_water, raw.level3_water]
         .map((v: any) => normalizeWaterCm(v))
         .filter((v) => Number.isFinite(v) && v >= 0);
-      if (levels.length === 0) {
-        setPreMonitorWater(null);
-        return;
-      }
-      // Track the highest sampled water level during pre-monitoring for trend visibility.
+      if (levels.length === 0) { setPreMonitorWater(null); return; }
       setPreMonitorWater(Math.max(...levels));
     });
     return () => off(preRef);
@@ -708,7 +765,8 @@ const wt = StyleSheet.create({
   note: { fontSize: 10, color: '#94A3B8', fontFamily: 'Poppins_400Regular', marginTop: 4 },
 });
 
-// ── PRE-MONITORING CARD ───────────────────────────────────────
+// ─── Pre-Monitoring Card ──────────────────────────────────────────────────────
+
 function PreMonitoringCard({ workerId }: { workerId: string }) {
   const [data, setData] = useState<any>(null);
 
@@ -723,7 +781,6 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
   const vColor  = verdict === 'SAFE' ? '#2ECC71' : verdict === 'WARNING' ? '#F39C12' : verdict === 'UNSAFE' ? '#E74C3C' : '#94A3B8';
   const vBg     = verdict === 'SAFE' ? '#E8F8F0' : verdict === 'WARNING' ? '#FEF9E7' : verdict === 'UNSAFE' ? '#FDEDEC' : '#F0F4F8';
   const vIcon   = verdict === 'SAFE' ? 'check-circle' : verdict === 'WARNING' ? 'alert-circle' : verdict === 'UNSAFE' ? 'close-circle' : 'radar';
-  const vLabel  = verdict === 'SAFE' ? 'SAFE — Entry Permitted' : verdict === 'WARNING' ? 'WARNING — Enter with Caution' : verdict === 'UNSAFE' ? 'UNSAFE — DO NOT ENTER!' : 'Awaiting scan...';
   const vSub    = verdict === 'SAFE' ? 'Normal precautions apply.' : verdict === 'WARNING' ? 'Full protective gear required.' : verdict === 'UNSAFE' ? 'Dangerous gas levels detected.' : 'Switch device to PRE mode and lower into sewer.';
 
   const levels = data ? [
@@ -732,15 +789,11 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
     { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0, water: data.level3_water ?? 0 },
   ] : [];
 
-  const ch4Status = (v: number) =>
-    v >= 20 ? 'danger' :
-    v >= 10 ? 'warning' : 'safe';
+  const ch4Status = (v: number) => v >= 20 ? 'danger' : v >= 10 ? 'warning' : 'safe';
   const coStatus  = (v: number) =>
-    v >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
-    v >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
+    v >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' : v >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
   const waterStatus = (v: number) => {
     const waterCm = normalizeWaterCm(v);
-    // In pre-monitoring, higher sampled water level means higher flooding risk.
     return waterCm >= SENSOR_THRESHOLDS.waterLevel.warningMax ? 'danger' : waterCm >= SENSOR_THRESHOLDS.waterLevel.dangerMax ? 'warning' : 'safe';
   };
 
@@ -774,8 +827,6 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
         <Text style={pm.title}>PRE-MONITORING</Text>
         <Text style={pm.sub}>3-Level Sewer Gas Sample</Text>
       </View>
-
-      {/* Verdict banner */}
       <View style={[pm.verdict, { backgroundColor: effectiveBg, borderColor: effectiveColor }]}>
         <MaterialCommunityIcons name={effectiveIcon as any} size={26} color={effectiveColor} />
         <View style={{ flex: 1 }}>
@@ -783,15 +834,12 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
           <Text style={pm.vSub}>{effectiveSub}</Text>
         </View>
       </View>
-
       {levels.length > 0 && (
         <View style={pm.statusRow}>
           {chip('CH₄', ch4Status(maxCh4))}
           {chip('CO', coStatus(maxCo))}
         </View>
       )}
-
-      {/* 3-Level gas table */}
       {levels.length > 0 ? (
         <View style={pm.table}>
           <View style={pm.tableHead}>
@@ -825,7 +873,6 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
           <Text style={pm.noDataSub}>Device must be in PRE mode</Text>
         </View>
       )}
-
       {data?.rssi != null && (
         <Text style={pm.signal}>LoRa Signal: {data.rssi} dBm</Text>
       )}
@@ -857,7 +904,8 @@ const pm = StyleSheet.create({
   signal: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: '#94A3B8', marginTop: 8 },
 });
 
-// ── MAIN SCREEN ───────────────────────────────────────────────
+// ─── MAIN SCREEN ──────────────────────────────────────────────────────────────
+
 export default function OverviewScreen() {
   const { manager, language, setManager, setWorkers, setAlerts, setSensors, workers, alerts, sensors } = useStore();
   const T = getText(language);
@@ -866,6 +914,28 @@ export default function OverviewScreen() {
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const workerScrollRef = useRef<ScrollView | null>(null);
   const panResponder = useRef<ReturnType<typeof PanResponder.create> | null>(null);
+
+  // ── Sobriety-aware threshold state (synced from Firebase) ─────────────────
+  const [activeThresholds, setActiveThresholds] = useState<ActiveThresholds>(THRESHOLDS.sober);
+
+  useEffect(() => {
+    if (!selectedWorkerId) {
+      setActiveThresholds(THRESHOLDS.sober);
+      return;
+    }
+    const thresholdRef = ref(rtdb, `workers/${selectedWorkerId}/thresholds`);
+    const unsub = onValue(thresholdRef, snapshot => {
+      const data = snapshot.val();
+      if (data) {
+        // Merge with sober defaults to ensure all fields are present
+        setActiveThresholds({ ...THRESHOLDS.sober, ...data });
+      } else {
+        setActiveThresholds(THRESHOLDS.sober);
+      }
+    });
+    return () => unsub();
+  }, [selectedWorkerId]);
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!manager) return;
@@ -890,15 +960,11 @@ export default function OverviewScreen() {
   const seenSensorEmergencyIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    console.log('📊 Alerts changed, count:', alerts.length);
     if (alerts.length === 0) return;
-
     if (seenAlertIds.current.size === 0) {
-      console.log('🆕 First load, marking all alerts as seen');
       seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
       return;
     }
-
     const newestUnresolved = alerts
       .filter((alert) => !alert.resolved && !seenAlertIds.current.has(alert.id))
       .sort((left, right) => {
@@ -906,93 +972,68 @@ export default function OverviewScreen() {
         const rightTs = (right.timestamp as any)?.toMillis?.() ?? 0;
         return rightTs - leftTs;
       })[0];
-
     if (newestUnresolved) {
-      console.log('🔔 NEW ALERT DETECTED:', newestUnresolved.id, newestUnresolved.type);
-      // Play alert sound asynchronously
-      playAlertSound(newestUnresolved).catch((error) => {
-        console.warn('Failed to play alert sound:', error);
-      });
-      if (newestUnresolved.type === 'SOS' || newestUnresolved.type === 'FALL') {
-        setShowSOS(true);
-      }
-    } else {
-      console.log('ℹ️ No new unresolved alerts');
+      playAlertSound(newestUnresolved).catch((error) => { console.warn('Failed to play alert sound:', error); });
+      if (newestUnresolved.type === 'SOS' || newestUnresolved.type === 'FALL') setShowSOS(true);
     }
-
     seenAlertIds.current = new Set(alerts.map((alert) => alert.id));
   }, [alerts]);
 
   useEffect(() => {
     const currentEmergencyIds = new Set<string>();
-
     Object.entries(sensors).forEach(([workerId, sensor]) => {
       const posture = (sensor.workerPosture ?? '').toLowerCase();
       const isFall = sensor.fallDetected || sensor.motionAlert === 1 || posture === 'fallen' || posture === 'fall';
       const isEmergency = isFall || sensor.sosTriggered;
-
       if (!isEmergency) return;
-
       const emergencyType = isFall ? 'FALL' : 'SOS';
       const emergencyId = `${workerId}:${emergencyType}`;
       currentEmergencyIds.add(emergencyId);
-
       if (!seenSensorEmergencyIds.current.has(emergencyId)) {
         setShowSOS(true);
         playAlertSound({
           id: `sensor-${emergencyId}-${sensor.lastUpdated || Date.now()}`,
           type: emergencyType,
-        }).catch((error) => {
-          console.warn('Failed to play sensor emergency sound:', error);
-        });
+        }).catch((error) => { console.warn('Failed to play sensor emergency sound:', error); });
       }
     });
-
     seenSensorEmergencyIds.current = currentEmergencyIds;
   }, [sensors]);
 
-    // ── TIME IN / TIME OUT TRACKER ────────────────────────────
-    const [workerTimers, setWorkerTimers] = useState<Record<string, { timeIn: Date; elapsed: number; running: boolean }>>({});
-    const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  
-    useEffect(() => {
-      timerIntervalRef.current = setInterval(() => {
-        setWorkerTimers(prev => {
-          let changed = false;
-          const updated: typeof prev = {};
-          Object.keys(prev).forEach(id => {
-            if (prev[id].running) {
-              updated[id] = { ...prev[id], elapsed: prev[id].elapsed + 1 };
-              changed = true;
-            } else {
-              updated[id] = prev[id];
-            }
-          });
-          return changed ? updated : prev;
-        });
-      }, 1000);
-      return () => { if (timerIntervalRef.current) clearInterval(timerIntervalRef.current); };
-    }, []);
-  
-    const handleTimeIn = (workerId: string) => {
-      setWorkerTimers(prev => ({ ...prev, [workerId]: { timeIn: new Date(), elapsed: 0, running: true } }));
-    };
-  
-    const handleTimeOut = (workerId: string) => {
-      setWorkerTimers(prev => prev[workerId] ? { ...prev, [workerId]: { ...prev[workerId], running: false } } : prev);
-    };
-  
-    const formatElapsed = (seconds: number): string => {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = seconds % 60;
-      if (h > 0) return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-      return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-    };
-    // ──────────────────────────────────────────────────────────
-  
+  // ── TIME IN / TIME OUT TRACKER ────────────────────────────────────────────
+  const [workerTimers, setWorkerTimers] = useState<Record<string, { timeIn: Date; elapsed: number; running: boolean }>>({});
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Setup pan responder for swipe gestures
+  useEffect(() => {
+    timerIntervalRef.current = setInterval(() => {
+      setWorkerTimers(prev => {
+        let changed = false;
+        const updated: typeof prev = {};
+        Object.keys(prev).forEach(id => {
+          if (prev[id].running) { updated[id] = { ...prev[id], elapsed: prev[id].elapsed + 1 }; changed = true; }
+          else { updated[id] = prev[id]; }
+        });
+        return changed ? updated : prev;
+      });
+    }, 1000);
+    return () => { if (timerIntervalRef.current) clearInterval(timerIntervalRef.current); };
+  }, []);
+
+  const handleTimeIn = (workerId: string) => {
+    setWorkerTimers(prev => ({ ...prev, [workerId]: { timeIn: new Date(), elapsed: 0, running: true } }));
+  };
+  const handleTimeOut = (workerId: string) => {
+    setWorkerTimers(prev => prev[workerId] ? { ...prev, [workerId]: { ...prev[workerId], running: false } } : prev);
+  };
+  const formatElapsed = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  };
+  // ─────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     panResponder.current = PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -1001,12 +1042,9 @@ export default function OverviewScreen() {
         const threshold = 50;
         const currentIdx = workers.findIndex(w => w.id === selectedWorkerId);
         if (currentIdx === -1) return;
-
         if (gestureState.dx > threshold && currentIdx > 0) {
-          // Swipe right -> go to previous worker
           setSelectedWorkerId(workers[currentIdx - 1].id);
         } else if (gestureState.dx < -threshold && currentIdx < workers.length - 1) {
-          // Swipe left -> go to next worker
           setSelectedWorkerId(workers[currentIdx + 1].id);
         }
       },
@@ -1050,10 +1088,8 @@ export default function OverviewScreen() {
     } as Alert));
 
   const alertsForLog = [...liveEmergencyAlerts, ...alerts];
-
   const dateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const timeStr = now.toTimeString().slice(0, 8);
-
   const s = activeSensor;
   const st = s ? getSensorStatus(s) : null;
 
@@ -1069,10 +1105,9 @@ export default function OverviewScreen() {
     <SafeAreaView style={main.safe} edges={['top']}>
       <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
 
-      {/* TOP BAR - Improved for mobile */}
+      {/* TOP BAR */}
       <View style={main.topBar}>
         {isMobile ? (
-          // Mobile layout - compact and worker-focused
           <View style={main.mobileTopContainer}>
             <View style={main.mobileTopTop}>
               <View style={main.logoBox}>
@@ -1086,17 +1121,11 @@ export default function OverviewScreen() {
                 <MaterialCommunityIcons name="logout" size={13} color="#fff" />
               </TouchableOpacity>
             </View>
-
-            {/* Worker info section */}
             <View style={main.mobileWorkerInfo}>
               <View style={main.mobileWorkerLeft}>
                 <Text style={main.mobileWorkerLabel}>CURRENT WORKER</Text>
-                <Text style={main.mobileWorkerName}>
-                  {selectedWorker?.name || 'Select Worker'}
-                </Text>
-                <Text style={main.mobileWorkerDetail}>
-                  {selectedWorker?.employeeId || '—'} · {s?.manholeId ?? '—'}
-                </Text>
+                <Text style={main.mobileWorkerName}>{selectedWorker?.name || 'Select Worker'}</Text>
+                <Text style={main.mobileWorkerDetail}>{selectedWorker?.employeeId || '—'} · {s?.manholeId ?? '—'}</Text>
               </View>
               <View style={main.mobileWorkerRight}>
                 <View style={main.dtBox}>
@@ -1111,7 +1140,6 @@ export default function OverviewScreen() {
             </View>
           </View>
         ) : (
-          // Desktop layout
           <>
             <View style={main.topLeft}>
               <View style={main.logoBox}>
@@ -1155,8 +1183,8 @@ export default function OverviewScreen() {
           </Text>
         </TouchableOpacity>
       )}
-      
-      {/* WORKER SELECTOR - With swipe support */}
+
+      {/* WORKER SELECTOR */}
       {workers.length > 0 && (
         <View {...panResponder.current?.panHandlers} style={main.workerBar}>
           <ScrollView
@@ -1199,7 +1227,7 @@ export default function OverviewScreen() {
           <EnvCard label="HEART RATE" value={s ? String(s.heartRate) : '—'} unit="bpm" status={st?.heartRate ?? 'safe'} />
         </ScrollView>
 
-        {/* 3-COLUMN GRID */}
+        {/* 3-COLUMN GRID (tablet) or stacked (mobile) */}
         {isTablet ? (
           <View style={main.grid3}>
             <View style={main.col1}>
@@ -1215,21 +1243,19 @@ export default function OverviewScreen() {
                 onToggleTimer={() => {
                   if (!selectedWorkerId) return;
                   const timer = workerTimers[selectedWorkerId];
-                  if (timer?.running) {
-                    handleTimeOut(selectedWorkerId);
-                  } else {
-                    handleTimeIn(selectedWorkerId);
-                  }
+                  if (timer?.running) handleTimeOut(selectedWorkerId);
+                  else handleTimeIn(selectedWorkerId);
                 }}
                 formatElapsed={formatElapsed}
                 worker={selectedWorker}
                 manager={manager}
+                activeThresholds={activeThresholds}
               />
               <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
             </View>
             <View style={main.col3}>
               <AlertsLogCard alerts={alertsForLog} />
-              <ThresholdCard sensor={activeSensor} />
+              <ThresholdCard sensor={activeSensor} activeThresholds={activeThresholds} />
             </View>
           </View>
         ) : (
@@ -1241,21 +1267,19 @@ export default function OverviewScreen() {
               onToggleTimer={() => {
                 if (!selectedWorkerId) return;
                 const timer = workerTimers[selectedWorkerId];
-                if (timer?.running) {
-                  handleTimeOut(selectedWorkerId);
-                } else {
-                  handleTimeIn(selectedWorkerId);
-                }
+                if (timer?.running) handleTimeOut(selectedWorkerId);
+                else handleTimeIn(selectedWorkerId);
               }}
               formatElapsed={formatElapsed}
               worker={selectedWorker}
               manager={manager}
+              activeThresholds={activeThresholds}
             />
             <PreMonitoringCard workerId={selectedWorkerId ?? workers[0]?.id ?? 'w001'} />
             <GasTrendCard sensor={activeSensor} />
-            <WaterTrendCard sensor={activeSensor} />
+            <WaterTrendCard sensor={activeSensor} workerId={selectedWorkerId ?? workers[0]?.id} />
             <AlertsLogCard alerts={alertsForLog} />
-            <ThresholdCard sensor={activeSensor} />
+            <ThresholdCard sensor={activeSensor} activeThresholds={activeThresholds} />
             <SystemStatusCard sensor={activeSensor} managerName={manager?.name ?? 'Manager'} />
           </View>
         )}
@@ -1271,25 +1295,19 @@ export default function OverviewScreen() {
 const main = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#F0F4F8' },
   topBar: { backgroundColor: '#1A3C6E', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: '#FF6B00', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-
-  // Desktop layout
   topLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   topRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-
-  // Mobile layout
-  mobileTopContainer: { gap: 10 , width: '100%'},
-  mobileTopTop: { flexDirection: 'row', alignItems: 'center', gap: 10, justifyContent: 'space-between', width: '100%',    },
-  mobileTopInfo: { flex: 1 ,minWidth: 0},
-  mobileOrgName: { color: '#fff', fontSize: 13, fontFamily: 'Poppins_700Bold', flexShrink: 1},
+  mobileTopContainer: { gap: 10, width: '100%' },
+  mobileTopTop: { flexDirection: 'row', alignItems: 'center', gap: 10, justifyContent: 'space-between', width: '100%' },
+  mobileTopInfo: { flex: 1, minWidth: 0 },
+  mobileOrgName: { color: '#fff', fontSize: 13, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
   mobileOrgSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', marginTop: 2 },
-
   mobileWorkerInfo: { flexDirection: 'row', alignItems: 'center', gap: 12, justifyContent: 'space-between', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   mobileWorkerLeft: { flex: 1 },
   mobileWorkerLabel: { color: '#8899AA', fontSize: 9, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.5 },
   mobileWorkerName: { color: '#fff', fontSize: 15, fontFamily: 'Poppins_700Bold', marginTop: 3 },
   mobileWorkerDetail: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular', marginTop: 2 },
   mobileWorkerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-
   logoBox: { width: 36, height: 36, borderRadius: 8, backgroundColor: 'rgba(255,107,0,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,107,0,0.4)' },
   topTitle: { color: '#fff', fontSize: 12, fontFamily: 'Poppins_700Bold' },
   topSub: { color: '#B8C8D8', fontSize: 10, fontFamily: 'Poppins_400Regular' },

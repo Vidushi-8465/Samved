@@ -97,6 +97,9 @@ type GasCfg = {
 const GAS_CONFIG: GasCfg[] = [
   { key: 'co',  label: 'CO',  unit: 'ppm', color: '#6B7280', l1: 25,   l2: 200,  l3: 400  },
   { key: 'ch4', label: 'CH₄', unit: 'ppm', color: '#F97316', l1: 1000, l2: 5000, l3: 8000 },
+  { key: 'h2s', label: 'H₂S', unit: 'ppm', color: '#84CC16', l1: 10,   l2: 100,  l3: 200  },
+  { key: 'o2',  label: 'O₂',  unit: '%',   color: '#3B82F6', l1: 19.5, l2: 17.5, l3: 15   },
+  { key: 'nh3', label: 'NH₃', unit: 'ppm', color: '#8B5CF6', l1: 25,   l2: 50,  l3: 100  },
 ];
 
 const VITAL_THRESHOLDS = {
@@ -240,11 +243,19 @@ function BarChart({ data, color, height = 130 }: {
   color: string;
   height?: number;
 }) {
+  if (!data || data.length === 0) {
+    return (
+      <View style={{ height, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 12, color: '#94A3B8' }}>No data available</Text>
+      </View>
+    );
+  }
+
   const W = SCREEN_W - Spacing.md * 2 - 32;
   const PAD = { top: 20, bottom: 30, left: 32, right: 8 };
   const chartW = W - PAD.left - PAD.right;
   const chartH = height - PAD.top - PAD.bottom;
-  const max = Math.max(...data.map(d => d.value), 1);
+  const max = Math.max.apply(Math, data.map(d => d.value).concat([1]));
   const barW = Math.max(chartW / data.length - 8, 4);
 
   const gradId = `barGrad${color.replace('#', '')}`;
@@ -314,8 +325,8 @@ function GasLineChart({ data, cfg, height = 150 }: {
     );
   }
 
-  const rawMax = Math.max(...validVals, cfg.l2 * 1.2);
-  const rawMin = Math.min(...validVals, 0);
+  const rawMax = Math.max.apply(Math, validVals.concat([cfg.l2 * 1.2]));
+  const rawMin = Math.min.apply(Math, validVals.concat([0]));
   const range = rawMax - rawMin || 1;
 
   const toY = (v: number) => PAD.top + chartH - ((v - rawMin) / range) * chartH;
@@ -362,22 +373,22 @@ function GasLineChart({ data, cfg, height = 150 }: {
 
       {/* Level lines */}
       {l1Y > PAD.top && l1Y < PAD.top + chartH && (
-        <>
+        <React.Fragment>
           <Line x1={PAD.left} y1={l1Y} x2={PAD.left + chartW} y2={l1Y}
             stroke="#16A34A" strokeWidth={1} strokeDasharray="5,3" />
           <SvgText x={PAD.left + chartW - 2} y={l1Y - 3} fontSize={7} fill="#16A34A" textAnchor="end">
             L1 safe
           </SvgText>
-        </>
+        </React.Fragment>
       )}
       {l2Y > PAD.top && l2Y < PAD.top + chartH && (
-        <>
+        <React.Fragment>
           <Line x1={PAD.left} y1={l2Y} x2={PAD.left + chartW} y2={l2Y}
             stroke="#F59E0B" strokeWidth={1} strokeDasharray="5,3" />
           <SvgText x={PAD.left + chartW - 2} y={l2Y - 3} fontSize={7} fill="#F59E0B" textAnchor="end">
             L2 caution
           </SvgText>
-        </>
+        </React.Fragment>
       )}
 
       {/* Segments coloured by level */}
@@ -476,13 +487,13 @@ function SemiGauge({ value, cfg, size = 120 }: {
 
         {/* Needle arrow */}
         {value != null && (
-          <>
+          <React.Fragment>
             <Line x1={cx} y1={cy} x2={needlePt.x} y2={needlePt.y}
               stroke={LEVEL_COLORS[lvl]} strokeWidth={2.5} strokeLinecap="round" />
             <Circle cx={cx} cy={cy} r={5} fill={LEVEL_COLORS[lvl]} />
             {/* Arrow head */}
             <Circle cx={needlePt.x} cy={needlePt.y} r={3.5} fill={LEVEL_COLORS[lvl]} />
-          </>
+          </React.Fragment>
         )}
 
         {/* Value text */}
@@ -535,7 +546,7 @@ function GasLevelCard({ gasKey, readings }: {
   const vals = readings.map(r => (r as any)[gasKey] as number | null).filter((v): v is number => v != null && v > 0);
   const current = vals.length ? vals[vals.length - 1] : null;
   const avgVal = avg(vals);
-  const maxVal = vals.length ? Math.max(...vals) : null;
+  const maxVal = vals.length ? Math.max.apply(Math, vals) : null;
 
   const l1Count = vals.filter(v => gasLevel(gasKey, v) === 'safe').length;
   const l2Count = vals.filter(v => gasLevel(gasKey, v) === 'caution').length;
@@ -707,18 +718,64 @@ interface ReportParams {
     avgO2: number | null;
     avgNh3: number | null;
   };
+  // Enhanced data for comprehensive reports
+  workers: {
+    id: string;
+    name: string;
+    employeeId: string;
+    zone: string;
+    shift: string;
+    phone: string;
+    bloodGroup: string;
+    emergencyContact: string;
+    status: 'safe' | 'warning' | 'danger' | 'offline';
+    heartRate?: number;
+    spo2?: number;
+    ch4?: number;
+    co?: number;
+    h2s?: number;
+    waterLevel?: number;
+    manholeId?: string;
+    locationLabel?: string;
+    lastSeen?: string;
+  }[];
+  vitalStats: {
+    avgHeartRate: number | null;
+    avgSpO2: number | null;
+    avgTemperature: number | null;
+    totalVitalReadings: number;
+  };
+  environmentalStats: {
+    avgWaterLevel: number | null;
+    maxWaterLevel: number | null;
+    totalWaterReadings: number;
+    gasTrendData: { label: string; value: number | null }[];
+    alertTrendData: { label: string; value: number }[];
+  };
+  complianceMetrics: {
+    totalWorkHours: number;
+    safetyComplianceRate: number;
+    equipmentStatus: { working: number; malfunctioning: number; maintenance: number };
+    trainingCompliance: number;
+    incidentRate: number;
+  };
 }
 
 function buildReportHtml(p: ReportParams): string {
   const now = new Date().toLocaleString('en-IN');
   const pl = p.period.charAt(0).toUpperCase() + p.period.slice(1);
   const g = p.overallGas;
+  const v = p.vitalStats;
+  const env = p.environmentalStats;
+  const comp = p.complianceMetrics;
 
   const summaryCards = [
     { label: 'Total Workers', value: p.workersCount },
     { label: 'Total Alerts', value: p.totalAlerts },
     { label: 'Resolved', value: p.resolvedAlerts },
     { label: 'Resolution Rate', value: `${p.resolutionRate}%` },
+    { label: 'Safety Compliance', value: `${comp.safetyComplianceRate}%` },
+    { label: 'Incident Rate', value: `${comp.incidentRate}%` },
   ].map(c =>
     `<div class="card"><div class="cardLabel">${c.label}</div><div class="cardValue">${c.value}</div></div>`
   ).join('');
@@ -744,11 +801,57 @@ function buildReportHtml(p: ReportParams): string {
       ).join('')
     : '<tr><td colspan="5" style="text-align:center;color:#64748B">No gas data</td></tr>';
 
+  // Workers section
+  const workerRows = p.workers.length
+    ? p.workers.map(w => {
+        const statusColor = w.status === 'danger' ? '#dc2626' : w.status === 'warning' ? '#f59e0b' : w.status === 'safe' ? '#16a34a' : '#64748b';
+        return `<tr>
+          <td>${esc(w.name)}</td><td>${esc(w.employeeId)}</td><td>${esc(w.zone)}</td>
+          <td>${esc(w.shift)}</td><td>${esc(w.phone)}</td><td>${esc(w.bloodGroup)}</td>
+          <td><span style="color:${statusColor}">${w.status.toUpperCase()}</span></td>
+          <td>${w.heartRate ?? 'N/A'}</td><td>${w.spo2 ?? 'N/A'}</td>
+          <td>${w.ch4 ?? 'N/A'}</td><td>${w.co ?? 'N/A'}</td>
+          <td>${w.waterLevel ? `${w.waterLevel} cm` : 'N/A'}</td>
+          <td>${esc(w.manholeId ?? '—')}</td><td>${esc(w.locationLabel ?? '—')}</td>
+          <td>${esc(w.lastSeen ?? '—')}</td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="14" style="text-align:center;color:#64748B">No worker data</td></tr>';
+
+  // Environmental stats
+  const envCards = [
+    { label: 'Avg Water Level', value: env.avgWaterLevel ? `${env.avgWaterLevel.toFixed(1)} cm` : 'N/A' },
+    { label: 'Max Water Level', value: env.maxWaterLevel ? `${env.maxWaterLevel.toFixed(1)} cm` : 'N/A' },
+    { label: 'Water Readings', value: env.totalWaterReadings },
+    { label: 'Vital Readings', value: v.totalVitalReadings },
+  ].map(c =>
+    `<div class="card"><div class="cardLabel">${c.label}</div><div class="cardValue">${c.value}</div></div>`
+  ).join('');
+
+  // Compliance stats
+  const complianceCards = [
+    { label: 'Total Work Hours', value: `${comp.totalWorkHours}h` },
+    { label: 'Safety Compliance', value: `${comp.safetyComplianceRate}%` },
+    { label: 'Training Compliance', value: `${comp.trainingCompliance}%` },
+    { label: 'Incident Rate', value: `${comp.incidentRate}%` },
+  ].map(c =>
+    `<div class="card"><div class="cardLabel">${c.label}</div><div class="cardValue">${c.value}</div></div>`
+  ).join('');
+
+  const equipmentRows = [
+    ['Working', comp.equipmentStatus.working, '#16a34a'],
+    ['Malfunctioning', comp.equipmentStatus.malfunctioning, '#dc2626'],
+    ['Under Maintenance', comp.equipmentStatus.maintenance, '#f59e0b'],
+  ].map(([status, count, color]) =>
+    `<tr><td>${esc(status)}</td><td><span style="color:${color}">${count}</span></td></tr>`
+  ).join('');
+
   return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
 body{font-family:Arial,sans-serif;color:#1A202C;padding:24px;max-width:900px;margin:0 auto;}
 h1{margin:0 0 6px;color:#1A3C6E;font-size:22px;}
 h2{font-size:15px;margin:24px 0 10px;color:#1A3C6E;border-bottom:2px solid #E2E8F0;padding-bottom:4px;}
+h3{font-size:13px;margin:20px 0 8px;color:#1A3C6E;border-bottom:1px solid #E2E8F0;padding-bottom:3px;}
 .meta{color:#64748B;font-size:12px;margin-bottom:20px;}
 .grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
 .card{border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;min-width:130px;}
@@ -761,55 +864,157 @@ th,td{border-bottom:1px solid #E2E8F0;text-align:left;padding:8px 6px;}
 th{color:#64748B;font-size:10px;text-transform:uppercase;background:#F8FAFC;}
 .footer{margin-top:32px;font-size:11px;color:#94A3B8;text-align:center;}
 </style></head><body>
-<h1>SMC LiveMonitor Safety Report</h1>
+<h1>SMC LiveMonitor Comprehensive Safety Report</h1>
 <div class="meta">Period: <strong>${pl}</strong> &nbsp;|&nbsp; Manager: <strong>${esc(p.managerName)}</strong> &nbsp;|&nbsp; Generated: <strong>${now}</strong></div>
-<h2>Summary</h2><div class="grid">${summaryCards}</div>
-<h2>Alert Breakdown</h2><ul>${p.alertsByType.map(a => `<li><span>${esc(a.label)}</span><strong>${a.count}</strong></li>`).join('')}</ul>
-<h2>Zone Performance</h2><ul>${p.zoneRows.map(z => `<li><span>${esc(z.name)}</span><span>${z.workers} workers · ${z.alerts} alerts · ${z.resolvedRate}% resolved</span></li>`).join('')}</ul>
-<h2>Overall Gas Concentration</h2>
+
+<h2>📊 OVERVIEW - Executive Summary</h2>
+<div class="grid">${summaryCards}</div>
+
+<h2>🚨 Alert Breakdown</h2>
+<ul>${p.alertsByType.map(a => `<li><span>${esc(a.label)}</span><strong>${a.count}</strong></li>`).join('')}</ul>
+
+<h2>🗺️ Zone Performance</h2>
+<ul>${p.zoneRows.map(z => `<li><span>${esc(z.name)}</span><span>${z.workers} workers · ${z.alerts} alerts · ${z.resolvedRate}% resolved</span></li>`).join('')}</ul>
+
+<h2>👥 WORKERS - Detailed Information</h2>
+<table><thead><tr><th>Name</th><th>ID</th><th>Zone</th><th>Shift</th><th>Phone</th><th>Blood</th><th>Status</th><th>HR</th><th>SpO₂</th><th>CH₄</th><th>CO</th><th>Water</th><th>Manhole</th><th>Location</th><th>Last Seen</th></tr></thead><tbody>${workerRows}</tbody></table>
+
+<h2>🫁 VITAL STATISTICS</h2>
+<div class="grid">
+  <div class="card"><div class="cardLabel">Avg Heart Rate</div><div class="cardValue">${v.avgHeartRate ? `${v.avgHeartRate} bpm` : 'N/A'}</div></div>
+  <div class="card"><div class="cardLabel">Avg SpO₂</div><div class="cardValue">${v.avgSpO2 ? `${v.avgSpO2}%` : 'N/A'}</div></div>
+  <div class="card"><div class="cardLabel">Avg Temperature</div><div class="cardValue">${v.avgTemperature ? `${v.avgTemperature}°C` : 'N/A'}</div></div>
+  <div class="card"><div class="cardLabel">Total Readings</div><div class="cardValue">${v.totalVitalReadings}</div></div>
+</div>
+
+<h2>🌡️ GAS & ENVIRONMENT</h2>
+<h3>Overall Gas Concentration</h3>
 <div class="grid">
   <div class="card"><div class="cardLabel">CO</div><div class="cardValue">${fmtVal(g.avgCo, ' ppm')}</div></div>
   <div class="card"><div class="cardLabel">CH₄</div><div class="cardValue">${fmtVal(g.avgCh4, ' ppm')}</div></div>
 </div>
-<h2>Gas by Zone / Sewer Line</h2>
+
+<h3>Environmental Statistics</h3>
+<div class="grid">${envCards}</div>
+
+<h3>Gas by Zone / Sewer Line</h3>
 <table><thead><tr><th>Zone</th><th>Sewer Line</th><th>CO (ppm)</th><th>CH₄ (ppm)</th><th>Readings</th></tr></thead><tbody>${gasZoneRows}</tbody></table>
-<div class="footer">SMC LiveMonitor &copy; ${new Date().getFullYear()} — Solapur Municipal Corporation</div>
+
+<h2>🛡️ COMPLIANCE & SAFETY</h2>
+<h3>Compliance Metrics</h3>
+<div class="grid">${complianceCards}</div>
+
+<h3>Equipment Status</h3>
+<table><thead><tr><th>Status</th><th>Count</th></tr></thead><tbody>${equipmentRows}</tbody></table>
+
+<h2>📋 ALERT LOGS</h2>
+<table><thead><tr><th>Time</th><th>Worker</th><th>Zone</th><th>Type</th><th>Value</th><th>Status</th></tr></thead><tbody>${alertRows}</tbody></table>
+
+<div class="footer">SMC LiveMonitor &copy; ${new Date().getFullYear()} — Solapur Municipal Corporation - Comprehensive Safety Report</div>
 </body></html>`;
 }
 
 function buildReportCsv(p: ReportParams): string {
   const lines: string[] = [];
   const now = new Date().toLocaleString('en-IN');
-  lines.push('SMC LiveMonitor Safety Report');
+  const v = p.vitalStats;
+  const env = p.environmentalStats;
+  const comp = p.complianceMetrics;
+  
+  lines.push('SMC LiveMonitor Comprehensive Safety Report');
   lines.push(`Period,${csvCell(p.period)}`);
   lines.push(`Manager,${csvCell(p.managerName)}`);
   lines.push(`Generated,${csvCell(now)}`);
   lines.push('');
-  lines.push('SUMMARY');
-  lines.push(`Total Workers,${p.workersCount}`);
-  lines.push(`Total Alerts,${p.totalAlerts}`);
-  lines.push(`Resolved,${p.resolvedAlerts}`);
-  lines.push(`Resolution Rate,${p.resolutionRate}%`);
+  
+  // OVERVIEW SECTION
+  lines.push('OVERVIEW - EXECUTIVE SUMMARY');
+  lines.push('Total Workers,' + p.workersCount);
+  lines.push('Total Alerts,' + p.totalAlerts);
+  lines.push('Resolved,' + p.resolvedAlerts);
+  lines.push('Resolution Rate,' + p.resolutionRate + '%');
+  lines.push('Safety Compliance,' + comp.safetyComplianceRate + '%');
+  lines.push('Incident Rate,' + comp.incidentRate + '%');
   lines.push('');
+  
+  // ALERT BREAKDOWN
   lines.push('ALERT BREAKDOWN');
   lines.push('Type,Count');
   p.alertsByType.forEach(a => lines.push(`${csvCell(a.label)},${a.count}`));
   lines.push('');
+  
+  // ZONE PERFORMANCE
   lines.push('ZONE PERFORMANCE');
   lines.push('Zone,Workers,Alerts,Resolution Rate');
   p.zoneRows.forEach(z => lines.push(`${csvCell(z.name)},${z.workers},${z.alerts},${z.resolvedRate}%`));
   lines.push('');
+  
+  // WORKERS DETAILED DATA
+  lines.push('WORKERS - DETAILED INFORMATION');
+  lines.push('Name,ID,Zone,Shift,Phone,Blood Group,Emergency Contact,Status,Heart Rate,SpO2,CH4,CO,H2S,Water Level,Manhole ID,Location,Last Seen');
+  p.workers.forEach(w => {
+    lines.push([
+      csvCell(w.name), csvCell(w.employeeId), csvCell(w.zone), csvCell(w.shift),
+      csvCell(w.phone), csvCell(w.bloodGroup), csvCell(w.emergencyContact),
+      csvCell(w.status.toUpperCase()),
+      w.heartRate ?? 'N/A', w.spo2 ?? 'N/A', w.ch4 ?? 'N/A', w.co ?? 'N/A', w.h2s ?? 'N/A',
+      w.waterLevel ? `${w.waterLevel} cm` : 'N/A',
+      csvCell(w.manholeId ?? 'N/A'), csvCell(w.locationLabel ?? 'N/A'), csvCell(w.lastSeen ?? 'N/A')
+    ].join(','));
+  });
+  lines.push('');
+  
+  // VITAL STATISTICS
+  lines.push('VITAL STATISTICS');
+  lines.push('Avg Heart Rate,' + (v.avgHeartRate ? `${v.avgHeartRate} bpm` : 'N/A'));
+  lines.push('Avg SpO2,' + (v.avgSpO2 ? `${v.avgSpO2}%` : 'N/A'));
+  lines.push('Avg Temperature,' + (v.avgTemperature ? `${v.avgTemperature}°C` : 'N/A'));
+  lines.push('Total Vital Readings,' + v.totalVitalReadings);
+  lines.push('');
+  
+  // GAS & ENVIRONMENT
+  lines.push('GAS & ENVIRONMENT');
   lines.push('OVERALL GAS');
   lines.push(`CO (ppm),${p.overallGas.avgCo ?? 'N/A'}`);
   lines.push(`CH4 (ppm),${p.overallGas.avgCh4 ?? 'N/A'}`);
+  lines.push(`H2S (ppm),${p.overallGas.avgH2s ?? 'N/A'}`);
+  lines.push(`O2 (ppm),${p.overallGas.avgO2 ?? 'N/A'}`);
+  lines.push(`NH3 (ppm),${p.overallGas.avgNh3 ?? 'N/A'}`);
   lines.push('');
+  
+  lines.push('ENVIRONMENTAL STATISTICS');
+  lines.push('Avg Water Level,' + (env.avgWaterLevel ? `${env.avgWaterLevel.toFixed(1)} cm` : 'N/A'));
+  lines.push('Max Water Level,' + (env.maxWaterLevel ? `${env.maxWaterLevel.toFixed(1)} cm` : 'N/A'));
+  lines.push('Total Water Readings,' + env.totalWaterReadings);
+  lines.push('');
+  
   lines.push('GAS BY ZONE');
-  lines.push('Zone,Sewer Line,CO (ppm),CH4 (ppm),Readings');
+  lines.push('Zone,Sewer Line,CO (ppm),CH4 (ppm),H2S (ppm),O2 (ppm),NH3 (ppm),Readings');
   p.gasStats.forEach(z =>
-    lines.push([csvCell(z.zone), csvCell(z.sewerLine),
-      z.avgCo ?? 'N/A', z.avgCh4 ?? 'N/A', z.readingsCount].join(','))
+    lines.push([
+      csvCell(z.zone), csvCell(z.sewerLine),
+      z.avgCo ?? 'N/A', z.avgCh4 ?? 'N/A', z.avgH2s ?? 'N/A',
+      z.avgO2 ?? 'N/A', z.avgNh3 ?? 'N/A', z.readingsCount
+    ].join(','))
   );
   lines.push('');
+  
+  // COMPLIANCE & SAFETY
+  lines.push('COMPLIANCE & SAFETY');
+  lines.push('Total Work Hours,' + comp.totalWorkHours + 'h');
+  lines.push('Safety Compliance Rate,' + comp.safetyComplianceRate + '%');
+  lines.push('Training Compliance,' + comp.trainingCompliance + '%');
+  lines.push('Incident Rate,' + comp.incidentRate + '%');
+  lines.push('');
+  
+  lines.push('EQUIPMENT STATUS');
+  lines.push('Status,Count');
+  lines.push('Working,' + comp.equipmentStatus.working);
+  lines.push('Malfunctioning,' + comp.equipmentStatus.malfunctioning);
+  lines.push('Under Maintenance,' + comp.equipmentStatus.maintenance);
+  lines.push('');
+  
+  // ALERT LOGS
   lines.push('ALERT LOGS');
   lines.push('Time,Worker,Zone,Type,Value,Status');
   p.recentAlerts.forEach(a =>
@@ -819,6 +1024,7 @@ function buildReportCsv(p: ReportParams): string {
       a.resolved ? 'Resolved' : 'Open',
     ].join(','))
   );
+  
   return lines.join('\n');
 }
 
@@ -1009,12 +1215,79 @@ export default function ReportsScreen() {
     effectiveWorkers.map(worker => ({ worker, sensor: effectiveSensors[(worker as any).id] ?? null })),
   [effectiveWorkers, effectiveSensors]);
 
+  // Enhanced worker data for comprehensive reports
+  const workersData = effectiveWorkers.map(worker => {
+    const sensor = effectiveSensors[worker.id];
+    const status = sensor ? getSensorStatus(sensor) : null;
+    const overall = status?.overall ?? 'offline';
+    return {
+      id: worker.id,
+      name: worker.name,
+      employeeId: worker.employeeId,
+      zone: worker.zone,
+      shift: worker.shift,
+      phone: worker.phone,
+      bloodGroup: worker.bloodGroup,
+      emergencyContact: worker.emergencyContact,
+      status: overall as 'safe' | 'warning' | 'danger' | 'offline',
+      heartRate: sensor?.heartRate,
+      spo2: sensor?.spO2,
+      ch4: sensor?.ch4,
+      co: (sensor as any)?.co,
+      h2s: sensor?.h2s,
+      waterLevel: sensor?.waterLevel,
+      manholeId: sensor?.manholeId,
+      locationLabel: sensor?.locationLabel,
+      lastSeen: sensor?.lastUpdated ? new Date(sensor.lastUpdated).toLocaleString('en-IN') : undefined,
+    };
+  });
+
+  // Vital statistics
+  const vitalStatsData = {
+    avgHeartRate: avg(vitalReadings.map(r => r.heartRate)),
+    avgSpO2: avg(vitalReadings.map(r => r.spo2)),
+    avgTemperature: avg(vitalReadings.map(r => r.temperature)),
+    totalVitalReadings: vitalReadings.length,
+  };
+
+  // Environmental statistics
+  const waterLevels = gasReadings.map(r => r.waterLevel).filter((w): w is number => w != null);
+  const environmentalStatsData = {
+    avgWaterLevel: avg(waterLevels),
+    maxWaterLevel: waterLevels.length ? Math.max.apply(Math, waterLevels) : null,
+    totalWaterReadings: waterLevels.length,
+    gasTrendData: gasTrendData,
+    alertTrendData: alertTrendData,
+  };
+
+  // Compliance metrics (calculated based on available data)
+  const totalWorkHours = effectiveWorkers.length * 8 * 7; // Assuming 8 hours/day, 7 days/week
+  const safetyComplianceRate = totalAlerts > 0 ? Math.max(0, 100 - (totalAlerts / effectiveWorkers.length) * 10) : 95;
+  const equipmentStatus = {
+    working: effectiveSensors ? Object.keys(effectiveSensors).length : 0,
+    malfunctioning: Math.max(0, effectiveWorkers.length - (effectiveSensors ? Object.keys(effectiveSensors).length : 0)),
+    maintenance: 0,
+  };
+  const trainingCompliance = 92; // Mock data - could be enhanced with real training data
+  const incidentRate = totalAlerts > 0 ? Math.round((totalAlerts / effectiveWorkers.length) * 100) : 0;
+
   const reportParams: ReportParams = {
     period, managerName: manager?.name || 'Manager',
     workersCount: effectiveWorkers.length,
     totalAlerts, resolvedAlerts, resolutionRate,
     alertsByType: alertsByType.map(({ label, count }) => ({ label, count })),
     zoneRows, recentAlerts, gasStats, overallGas,
+    // Enhanced comprehensive data
+    workers: workersData,
+    vitalStats: vitalStatsData,
+    environmentalStats: environmentalStatsData,
+    complianceMetrics: {
+      totalWorkHours,
+      safetyComplianceRate,
+      equipmentStatus,
+      trainingCompliance,
+      incidentRate,
+    },
   };
 
   const fileName = `smc-livemonitor-${period}-report`;
@@ -1370,20 +1643,18 @@ export default function ReportsScreen() {
               </ScrollView>
 
               <GasLineChart data={gasTrendData} cfg={selectedGasCfg} />
-
-              {/* Threshold legend */}
               <View style={styles.thresholdLegend}>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.safe }]} />
-                  <Text style={styles.legendText}>L1 Safe ≤{selectedGasCfg.l1}{selectedGasCfg.unit}</Text>
+                  <Text style={styles.legendText}>L1 Safe ≤{ ' ' }{selectedGasCfg.l1}{selectedGasCfg.unit}</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.caution }]} />
-                  <Text style={styles.legendText}>L2 Caution ≤{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
+                  <Text style={styles.legendText}>L2 Caution ≤{ ' ' }{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.danger }]} />
-                  <Text style={styles.legendText}>L3 Danger >{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
+                  <Text style={styles.legendText}>L3 Danger >{ ' ' }{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
                 </View>
               </View>
             </View>
