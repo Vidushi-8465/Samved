@@ -17,7 +17,7 @@ import {
 import { logoutManager } from '@/services/authService';
 import { ref, onValue, off } from 'firebase/database';
 import { rtdb } from '@/services/firebase';
-import { playAlertSound } from '@/utils/alertSound';
+import { playAlertSound, stopAlertSound } from '@/utils/alertSound';
 import { isHiddenWorker } from '@/constants/hiddenWorkers';
 import { THRESHOLDS } from './workers'; // ← import shared THRESHOLDS from workers
 import { triggerBuzzer, sendWarnCommand, sendEvacuateCommand } from '@/services/buzzerService';
@@ -1334,7 +1334,7 @@ const handleDangerEvacuate = async () => {
 
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
-      <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
+      <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={async () => { await stopAlertSound(); setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
       
       {/* Warning Banner */}
       <WarningBanner 

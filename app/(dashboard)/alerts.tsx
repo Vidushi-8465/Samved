@@ -93,6 +93,7 @@ export default function AlertsScreen() {
 
   const doResolve = async (alert: AlertType) => {
     try {
+      await stopAlertSound();
       await resolveAlert(alert.id, manager?.name || 'Manager');
     } catch (e) {
       Alert.alert('Error', 'Could not resolve alert. Check connection.');

@@ -16,7 +16,13 @@ const CRITICAL_TYPES = new Set([
   'GAS_CRITICAL',
 ]);
 
-// For web: create audio element
+// ── Single persistent sound instance (mobile) ─────────────────────────────────
+// Kept at module level so stopAlertSound() can always reach and stop it,
+// regardless of how many times playAlertSound() has been called.
+let _sound: any = null;
+let _isPlaying = false;
+
+// For web: persistent audio element so stop() can pause it
 let webAudio: HTMLAudioElement | null = null;
 const webAlarmSource = (() => {
   try {
@@ -29,28 +35,26 @@ const webAlarmSource = (() => {
   }
 })();
 
-// For mobile: lazy load expo-av only when needed
+// For mobile: lazy-loaded expo-av
 let Audio: any = null;
-let soundObject: any = null;
 let isAudioInitialized = false;
 
-// Initialize audio mode for mobile
+// ── Mobile audio init ─────────────────────────────────────────────────────────
 async function initMobileAudio() {
   if (isAudioInitialized || Platform.OS === 'web') return true;
-  
+
   try {
-    // Lazy load expo-av only on mobile
     if (!Audio) {
       const expoAv = await import('expo-av');
       Audio = expoAv.Audio;
     }
-    
+
     console.log('🔊 Initializing mobile audio...');
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
       playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      shouldDuckAndroid: true,
+      staysActiveInBackground: true,   // keep alive in background
+      shouldDuckAndroid: false,        // don't duck — alert must be heard
       playThroughEarpieceAndroid: false,
     });
     isAudioInitialized = true;
@@ -62,28 +66,32 @@ async function initMobileAudio() {
   }
 }
 
-// Play alarm on mobile
+// ── Mobile alarm (persistent instance + looping) ──────────────────────────────
 async function playMobileAlarm() {
   try {
     console.log('📱 Playing alarm on mobile...');
-    
-    if (soundObject) {
-      await soundObject.unloadAsync().catch(() => {});
-      soundObject = null;
-    }
+
+    // Stop and unload any previous instance before creating a new one
+    await stopAlertSound();
 
     const { sound } = await Audio.Sound.createAsync(
       require('../assets/alarm.mp3'),
-      { shouldPlay: false, volume: 1.0, isLooping: false }
+      {
+        shouldPlay: true,
+        isLooping: true,   // loop until stopAlertSound() is called
+        volume: 1.0,
+      }
     );
-    
-    soundObject = sound;
-    await sound.playAsync();
-    console.log('✅ Mobile alarm playing');
-    
-    sound.setOnPlaybackStatusUpdate((status: any) => {
+
+    _sound = sound;
+    _isPlaying = true;
+    console.log('✅ Mobile alarm playing (looping)');
+
+    // Safety cleanup in case the sound finishes unexpectedly (non-looping fallback)
+    _sound.setOnPlaybackStatusUpdate((status: any) => {
       if (status.isLoaded && status.didJustFinish) {
-        sound.unloadAsync().catch(() => {});
+        _isPlaying = false;
+        _sound = null;
       }
     });
 
@@ -94,7 +102,7 @@ async function playMobileAlarm() {
   }
 }
 
-// Play alarm on web using HTML5 Audio
+// ── Web alarm (persistent HTML5 Audio element) ────────────────────────────────
 function playWebAlarm() {
   try {
     console.log('🌐 Playing alarm on web...');
@@ -106,6 +114,7 @@ function playWebAlarm() {
 
     webAudio = new window.Audio(webAlarmSource);
     webAudio.volume = 1.0;
+    webAudio.loop = true;    // loop until stopAlertSound() is called
     webAudio.preload = 'auto';
 
     webAudio.play()
@@ -123,7 +132,7 @@ function playWebAlarm() {
   }
 }
 
-// Fallback: Generate alert tone using Web Audio API
+// ── Fallback: Web Audio API tone sequence ─────────────────────────────────────
 function playWebToneSequence(level: AlertSoundLevel) {
   try {
     console.log('🎵 Playing tone sequence...');
@@ -132,7 +141,7 @@ function playWebToneSequence(level: AlertSoundLevel) {
       console.error('❌ Web Audio API not supported');
       return;
     }
-    
+
     const context = new AudioContext();
     const gain = context.createGain();
     gain.gain.value = 0.0001;
@@ -143,18 +152,19 @@ function playWebToneSequence(level: AlertSoundLevel) {
     oscillator.connect(gain);
 
     const start = context.currentTime;
-    const steps = level === 'critical'
-      ? [
-          { at: 0.00, freq: 880, gain: 0.3 },
-          { at: 0.22, freq: 660, gain: 0.3 },
-          { at: 0.44, freq: 880, gain: 0.3 },
-          { at: 0.66, freq: 660, gain: 0.3 },
-          { at: 0.88, freq: 880, gain: 0.3 },
-        ]
-      : [
-          { at: 0.00, freq: 988, gain: 0.2 },
-          { at: 0.16, freq: 988, gain: 0.0 },
-        ];
+    const steps =
+      level === 'critical'
+        ? [
+            { at: 0.00, freq: 880, gain: 0.3 },
+            { at: 0.22, freq: 660, gain: 0.3 },
+            { at: 0.44, freq: 880, gain: 0.3 },
+            { at: 0.66, freq: 660, gain: 0.3 },
+            { at: 0.88, freq: 880, gain: 0.3 },
+          ]
+        : [
+            { at: 0.00, freq: 988, gain: 0.2 },
+            { at: 0.16, freq: 988, gain: 0.0 },
+          ];
 
     oscillator.frequency.setValueAtTime(steps[0].freq, start);
     gain.gain.setValueAtTime(0.0001, start);
@@ -173,18 +183,16 @@ function playWebToneSequence(level: AlertSoundLevel) {
     oscillator.stop(start + duration + 0.05);
 
     setTimeout(() => {
-      try {
-        context.close();
-      } catch {}
+      try { context.close(); } catch {}
     }, (duration + 0.2) * 1000);
-    
+
     console.log('✅ Tone sequence started');
   } catch (error) {
     console.error('❌ Tone sequence failed:', error);
   }
 }
 
-// Vibration for mobile
+// ── Vibration ─────────────────────────────────────────────────────────────────
 function playNativeVibration(level: AlertSoundLevel) {
   try {
     if (level === 'critical') {
@@ -197,10 +205,11 @@ function playNativeVibration(level: AlertSoundLevel) {
   }
 }
 
+// ── Public: play ──────────────────────────────────────────────────────────────
 export async function playAlertSound(alert: { id: string; type: string }) {
   console.log('🚨 ALERT SOUND TRIGGERED:', alert.id, 'Type:', alert.type);
   console.log('📍 Platform:', Platform.OS);
-  
+
   if (playedAlertIds.has(alert.id)) {
     console.log('⏭️ Already played this alert, skipping');
     return false;
@@ -220,7 +229,7 @@ export async function playAlertSound(alert: { id: string; type: string }) {
       if (initialized) {
         await playMobileAlarm();
       }
-      
+
       if (level === 'critical') {
         console.log('📳 Playing vibration...');
         playNativeVibration(level);
@@ -234,43 +243,46 @@ export async function playAlertSound(alert: { id: string; type: string }) {
   }
 }
 
-export function resetPlayedAlertSound(alertId: string) {
-  playedAlertIds.delete(alertId);
-}
-
-export async function stopAlertSound() {
+// ── Public: stop (call this from your Acknowledge button) ─────────────────────
+export async function stopAlertSound(): Promise<void> {
+  // Web
   if (Platform.OS === 'web') {
     if (webAudio) {
       webAudio.pause();
       webAudio.currentTime = 0;
+      webAudio = null;
     }
     return;
   }
 
-  if (soundObject) {
-    try {
-      await soundObject.stopAsync();
-      await soundObject.unloadAsync();
-      soundObject = null;
-    } catch {
-      try {
-        await soundObject.unloadAsync();
-        soundObject = null;
-      } catch {}
+  // Mobile — unload the persistent sound instance
+  if (!_sound) return;
+  try {
+    const status = await _sound.getStatusAsync();
+    if (status.isLoaded) {
+      await _sound.stopAsync();
+      await _sound.unloadAsync();
     }
+  } catch (error) {
+    // Sound may already be unloaded — safe to ignore
+    console.warn('[alertSound] stopAlertSound error (usually safe):', error);
+  } finally {
+    _sound = null;
+    _isPlaying = false;
   }
 }
 
+// ── Public: query ─────────────────────────────────────────────────────────────
+export function isAlertSoundPlaying(): boolean {
+  return _isPlaying;
+}
+
+// ── Public: reset deduplication for a single alert ───────────────────────────
+export function resetPlayedAlertSound(alertId: string) {
+  playedAlertIds.delete(alertId);
+}
+
+// ── Public: full cleanup (e.g. on app unmount) ────────────────────────────────
 export async function cleanupAudio() {
-  if (Platform.OS === 'web') {
-    if (webAudio) {
-      webAudio.pause();
-      webAudio = null;
-    }
-  } else if (soundObject) {
-    try {
-      await soundObject.unloadAsync();
-      soundObject = null;
-    } catch {}
-  }
+  await stopAlertSound();
 }
