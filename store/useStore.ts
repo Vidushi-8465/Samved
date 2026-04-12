@@ -239,7 +239,13 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   alerts: [],
-  setAlerts: (alerts) => set({ alerts: alerts.filter((alert) => !isHiddenWorker(alert.workerId, alert.workerName)) }),
+  setAlerts: (alerts) => set((state) => {
+    const visibleIncoming = alerts.filter((alert) => !isHiddenWorker(alert.workerId, alert.workerName));
+    const incomingIds = new Set(visibleIncoming.map((alert) => alert.id));
+    const preserved = state.alerts.filter((alert) => !incomingIds.has(alert.id));
+
+    return { alerts: [...visibleIncoming, ...preserved] };
+  }),
 
   language: 'en',
   setLanguage: (language) => set({ language }),

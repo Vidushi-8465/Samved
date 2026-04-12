@@ -18,6 +18,16 @@ const CRITICAL_TYPES = new Set([
 
 // For web: create audio element
 let webAudio: HTMLAudioElement | null = null;
+const webAlarmSource = (() => {
+  try {
+    const moduleRef = require('../assets/alarm.mp3');
+    return typeof moduleRef === 'string'
+      ? moduleRef
+      : moduleRef?.uri ?? moduleRef?.default ?? moduleRef;
+  } catch {
+    return '/alarm.mp3';
+  }
+})();
 
 // For mobile: lazy load expo-av only when needed
 let Audio: any = null;
@@ -94,8 +104,9 @@ function playWebAlarm() {
       webAudio.currentTime = 0;
     }
 
-    webAudio = new Audio('/alarm.mp3');
+    webAudio = new window.Audio(webAlarmSource);
     webAudio.volume = 1.0;
+    webAudio.preload = 'auto';
 
     webAudio.play()
       .then(() => console.log('✅ Playing alarm.mp3!'))
@@ -225,6 +236,29 @@ export async function playAlertSound(alert: { id: string; type: string }) {
 
 export function resetPlayedAlertSound(alertId: string) {
   playedAlertIds.delete(alertId);
+}
+
+export async function stopAlertSound() {
+  if (Platform.OS === 'web') {
+    if (webAudio) {
+      webAudio.pause();
+      webAudio.currentTime = 0;
+    }
+    return;
+  }
+
+  if (soundObject) {
+    try {
+      await soundObject.stopAsync();
+      await soundObject.unloadAsync();
+      soundObject = null;
+    } catch {
+      try {
+        await soundObject.unloadAsync();
+        soundObject = null;
+      } catch {}
+    }
+  }
 }
 
 export async function cleanupAudio() {

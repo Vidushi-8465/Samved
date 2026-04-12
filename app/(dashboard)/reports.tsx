@@ -37,6 +37,7 @@ import {
   listenToWorkers,
   listenToAlerts,
   listenToAllSensors,
+  listenToPreMonitor,
   SOLAPUR_ZONES,
   SensorData,
   WorkerProfile,
@@ -63,6 +64,7 @@ type ReportAlert = {
 };
 
 type GasReading = {
+  workerId?: string;
   zone: string;
   sewerLine?: string;
   ch4?: number | null;
@@ -140,6 +142,12 @@ function isInPeriod(ts: any, period: Period): boolean {
 function avg(vals: (number | null | undefined)[]): number | null {
   const v = vals.filter((x): x is number => x != null && !isNaN(x) && x > 0);
   return v.length ? Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 : null;
+}
+
+function getAvgWaterLevelByWorker(workerId: string, gasReadings: GasReading[]): number | null {
+  const workerReadings = gasReadings.filter(r => r.workerId === workerId && r.waterLevel != null);
+  const waterLevels = workerReadings.map(r => r.waterLevel).filter((w): w is number => w != null && w > 0);
+  return avg(waterLevels);
 }
 
 function fmtVal(val: number | null | undefined, unit: string): string {
@@ -468,7 +476,7 @@ function GasLineChart({ data, cfg, height = 160 }: {
   );
 }
 
-// ─── SVG: Semi-circular Gauge with arrow ──────────────────────────────────────
+// --- SVG: Modern Radial Progress Gauge ---
 
 function SemiGauge({ value, cfg, size = 120 }: {
   value: number | null;
@@ -476,69 +484,117 @@ function SemiGauge({ value, cfg, size = 120 }: {
   size?: number;
 }) {
   const cx = size / 2;
-  const cy = size * 0.62;
-  const R = size * 0.38;
-  const strokeW = size * 0.09;
+  const cy = size / 2;
+  const radius = size * 0.35;
+  const strokeWidth = size * 0.08;
+  const innerRadius = radius - strokeWidth;
 
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const arcPt = (deg: number) => ({
-    x: cx + R * Math.cos(toRad(deg)),
-    y: cy + R * Math.sin(toRad(deg)),
-  });
-
-  const describeArc = (startDeg: number, endDeg: number) => {
-    const s = arcPt(startDeg);
-    const e = arcPt(endDeg);
-    const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
-    return `M ${s.x} ${s.y} A ${R} ${R} 0 ${large} 1 ${e.x} ${e.y}`;
-  };
-
-  const START = -180;
-  const MID1  = -120;
-  const MID2  = -60;
-  const END   = 0;
-
-  const isInverted = cfg.key === 'o2';
-
+  // Calculate percentage and level
   let pct = 0;
   if (value != null) {
     pct = Math.min(Math.max((value - 0) / (cfg.l3 - 0), 0), 1);
-    if (isInverted) pct = 1 - pct;
+    if (cfg.key === 'o2') pct = 1 - pct; // Invert for O2
   }
-  const needleDeg = START + pct * 180;
-  const needlePt = arcPt(needleDeg);
 
   const lvl = gasLevel(cfg.key, value);
+  
+  // Create gradient ID
+  const gradientId = `gauge-${cfg.key}-${size}`;
+
+  // Calculate arc parameters
+  const startAngle = -135; // Start from top-left
+  const endAngle = 135;    // End at top-right
+  const totalAngle = endAngle - startAngle;
+  const valueAngle = startAngle + (pct * totalAngle);
+
+  // Convert angles to radians
+  const toRad = (angle: number) => (angle * Math.PI) / 180;
+  
+  // Create arc path
+  const createArcPath = (startAngle: number, endAngle: number) => {
+    const start = toRad(startAngle);
+    const end = toRad(endAngle);
+    const largeArcFlag = Math.abs(endAngle - startAngle) > 180 ? 1 : 0;
+    
+    const x1 = cx + innerRadius * Math.cos(start);
+    const y1 = cy + innerRadius * Math.sin(start);
+    const x2 = cx + innerRadius * Math.cos(end);
+    const y2 = cy + innerRadius * Math.sin(end);
+    
+    const x3 = cx + radius * Math.cos(start);
+    const y3 = cy + radius * Math.sin(start);
+    const x4 = cx + radius * Math.cos(end);
+    const y4 = cy + radius * Math.sin(end);
+    
+    return `
+      M ${x1} ${y1}
+      L ${x3} ${y3}
+      A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x4} ${y4}
+      L ${x2} ${y2}
+      A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${x1} ${y1}
+    `;
+  };
 
   return (
     <View style={{ alignItems: 'center', width: size + 8 }}>
-      <Svg width={size} height={size * 0.72}>
-        <Path d={describeArc(START, MID1)} stroke={isInverted ? '#DC2626' : '#16A34A'}
-          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
-        <Path d={describeArc(MID1, MID2)} stroke="#F59E0B"
-          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
-        <Path d={describeArc(MID2, END)} stroke={isInverted ? '#16A34A' : '#DC2626'}
-          strokeWidth={strokeW} fill="none" strokeLinecap="butt" opacity={0.25} />
-
+      <Svg width={size} height={size}>
+        <Defs>
+          <LinearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <Stop offset="0%" stopColor={LEVEL_COLORS[lvl]} stopOpacity="0.8" />
+            <Stop offset="100%" stopColor={LEVEL_COLORS[lvl]} stopOpacity="1" />
+          </LinearGradient>
+        </Defs>
+        
+        {/* Background track */}
+        <Path
+          d={createArcPath(startAngle, endAngle)}
+          fill="#E5E7EB"
+          opacity={0.3}
+        />
+        
+        {/* Threshold segments */}
+        <Path
+          d={createArcPath(startAngle, startAngle + totalAngle * 0.33)}
+          fill={cfg.key === 'o2' ? '#DC2626' : '#16A34A'}
+          opacity={0.2}
+        />
+        <Path
+          d={createArcPath(startAngle + totalAngle * 0.33, startAngle + totalAngle * 0.67)}
+          fill="#F59E0B"
+          opacity={0.2}
+        />
+        <Path
+          d={createArcPath(startAngle + totalAngle * 0.67, endAngle)}
+          fill={cfg.key === 'o2' ? '#16A34A' : '#DC2626'}
+          opacity={0.2}
+        />
+        
+        {/* Value arc */}
         {value != null && pct > 0 && (
-          <Path d={describeArc(START, needleDeg)}
-            stroke={LEVEL_COLORS[lvl]} strokeWidth={strokeW} fill="none" strokeLinecap="butt" />
+          <Path
+            d={createArcPath(startAngle, valueAngle)}
+            fill={`url(#${gradientId})`}
+          />
         )}
-
-        {value != null && (
-          <React.Fragment>
-            <Line x1={cx} y1={cy} x2={needlePt.x} y2={needlePt.y}
-              stroke={LEVEL_COLORS[lvl]} strokeWidth={2.5} strokeLinecap="round" />
-            <Circle cx={cx} cy={cy} r={5} fill={LEVEL_COLORS[lvl]} />
-            <Circle cx={needlePt.x} cy={needlePt.y} r={3.5} fill={LEVEL_COLORS[lvl]} />
-          </React.Fragment>
-        )}
-
-        <SvgText x={cx} y={cy + 16} fontSize={13} fontWeight="bold"
-          fill={value != null ? LEVEL_COLORS[lvl] : '#CBD5E1'} textAnchor="middle">
-          {value != null ? `${value}` : '—'}
+        
+        {/* Center content */}
+        <SvgText
+          x={cx}
+          y={cy - 5}
+          fontSize={16}
+          fontWeight="bold"
+          fill={value != null ? LEVEL_COLORS[lvl] : '#CBD5E1'}
+          textAnchor="middle"
+        >
+          {value != null ? `${value}` : '---'}
         </SvgText>
-        <SvgText x={cx} y={cy + 27} fontSize={8} fill="#94A3B8" textAnchor="middle">
+        <SvgText
+          x={cx}
+          y={cy + 10}
+          fontSize={9}
+          fill="#94A3B8"
+          textAnchor="middle"
+        >
           {cfg.unit}
         </SvgText>
       </Svg>
@@ -546,7 +602,7 @@ function SemiGauge({ value, cfg, size = 120 }: {
       <View style={[styles.gaugeBadge, { backgroundColor: LEVEL_BG[lvl] }]}>
         <View style={[styles.gaugeDot, { backgroundColor: LEVEL_COLORS[lvl] }]} />
         <Text style={[styles.gaugeBadgeText, { color: LEVEL_COLORS[lvl] }]}>
-          {lvl === 'na' ? '—' : lvl.toUpperCase()}
+          {lvl === 'na' ? '---' : lvl.toUpperCase()}
         </Text>
       </View>
       <Text style={styles.gaugeLabel}>{cfg.label}</Text>
@@ -554,25 +610,85 @@ function SemiGauge({ value, cfg, size = 120 }: {
   );
 }
 
-// ─── Water Level indicator ─────────────────────────────────────────────────────
-
 function WaterLevelBar({ value, maxCm = 200 }: { value: number | null; maxCm?: number }) {
   const pct = value != null ? Math.min(value / maxCm, 1) : 0;
   const color = value == null ? '#CBD5E1'
     : value < 50  ? LEVEL_COLORS.safe
     : value < 120 ? LEVEL_COLORS.caution
     : LEVEL_COLORS.danger;
+  
+  const size = 80;
+  const strokeWidth = 8;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (pct * circumference);
+  
+  // Water level status
+  const status = value == null ? 'No Data' 
+    : value < 50  ? 'Low'
+    : value < 120 ? 'Medium' 
+    : 'High';
+  
   return (
-    <View style={styles.waterBarWrap}>
-      <View style={styles.waterBarTrack}>
-        <View style={[styles.waterBarFill, { height: `${pct * 100}%`, backgroundColor: color }]} />
+    <View style={{ alignItems: 'center', padding: 8 }}>
+      <Svg width={size} height={size}>
+        {/* Background circle */}
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#E5E7EB"
+          strokeWidth={strokeWidth}
+          fill="none"
+        />
+        
+        {/* Progress circle */}
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+        
+        {/* Inner content */}
+        <SvgText
+          x={size / 2}
+          y={size / 2 - 8}
+          fontSize={18}
+          fontWeight="bold"
+          fill={color}
+          textAnchor="middle"
+        >
+          {value != null ? `${value}` : '---'}
+        </SvgText>
+        <SvgText
+          x={size / 2}
+          y={size / 2 + 8}
+          fontSize={10}
+          fill="#6B7280"
+          textAnchor="middle"
+        >
+          cm
+        </SvgText>
+      </Svg>
+      
+      {/* Status indicator */}
+      <View style={{ marginTop: 4 }}>
+        <Text style={{ fontSize: 11, fontWeight: '600', color, textAlign: 'center' }}>
+          {status}
+        </Text>
       </View>
-      <Text style={[styles.waterBarValue, { color }]}>{fmtCm(value)}</Text>
     </View>
   );
 }
 
-// ─── Pre-monitoring Level Card (L1/L2/L3) ─────────────────────────────────────
+// --- Pre-monitoring Level Card (L1/L2/L3) ---
 
 function GasLevelCard({ gasKey, readings }: {
   gasKey: string;
@@ -659,9 +775,10 @@ function GasLevelCard({ gasKey, readings }: {
 
 // ─── Live Worker Card ──────────────────────────────────────────────────────────
 
-function LiveWorkerCard({ worker, sensor }: {
+function LiveWorkerCard({ worker, sensor, preMonitorWaterLevel }: {
   worker: WorkerProfile;
   sensor?: SensorData | null;
+  preMonitorWaterLevel?: number | null;
 }) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const overall = status?.overall ?? 'offline';
@@ -677,12 +794,16 @@ function LiveWorkerCard({ worker, sensor }: {
     : overall === 'safe'    ? Colors.successBg
     : Colors.background;
 
+  const effectiveWaterLevel = (sensor?.waterLevel != null && sensor.waterLevel > 0)
+    ? sensor.waterLevel
+    : (preMonitorWaterLevel ?? null);
+
   const metrics = [
     { label: 'HR',    value: sensor?.heartRate ? `${sensor.heartRate} bpm` : '—', icon: 'heart-pulse',   lvl: sensor?.heartRate ? (sensor.heartRate < 60 || sensor.heartRate > 100 ? 'caution' : 'safe') : 'na' },
     { label: 'SpO₂', value: sensor?.spO2       ? `${sensor.spO2}%`         : '—', icon: 'lungs',         lvl: sensor?.spO2 ? (sensor.spO2 < 90 ? 'danger' : sensor.spO2 < 95 ? 'caution' : 'safe') : 'na' },
     { label: 'CH₄',  value: sensor?.ch4        ? `${sensor.ch4} ppm`       : '—', icon: 'fire',          lvl: gasLevel('ch4', sensor?.ch4 ?? null) },
     { label: 'CO',   value: (sensor as any)?.co ? `${(sensor as any).co} ppm` : '—', icon: 'cloud-outline', lvl: gasLevel('co', (sensor as any)?.co ?? null) },
-    { label: 'Water',value: fmtCm(sensor?.waterLevel),                               icon: 'water',         lvl: sensor?.waterLevel != null ? (sensor.waterLevel > 120 ? 'danger' : sensor.waterLevel > 50 ? 'caution' : 'safe') : 'na' },
+    { label: 'Water',value: fmtCm(effectiveWaterLevel),                              icon: 'water',         lvl: effectiveWaterLevel != null ? (effectiveWaterLevel > 120 ? 'danger' : effectiveWaterLevel > 50 ? 'caution' : 'safe') : 'na' },
   ] as const;
 
   return (
@@ -717,6 +838,10 @@ function LiveWorkerCard({ worker, sensor }: {
           📍 {sensor.manholeId ?? '—'} · {sensor.locationLabel ?? '—'}
           {'  '}RSSI: {sensor.rssi != null ? `${sensor.rssi} dBm` : '—'}
         </Text>
+      )}
+
+      {preMonitorWaterLevel != null && (
+        <Text style={styles.liveWorkerFooter}>Pre-monitor water avg: {fmtCm(preMonitorWaterLevel)}</Text>
       )}
     </View>
   );
@@ -1096,6 +1221,7 @@ export default function ReportsScreen() {
   const [liveWorkers, setLiveWorkers] = useState<WorkerProfile[]>([]);
   const [liveSensors, setLiveSensors] = useState<Record<string, SensorData>>({});
   const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([]);
+  const [preMonitorWaterByWorker, setPreMonitorWaterByWorker] = useState<Record<string, number | null>>({});
 
   // ── FIX: sensor subscription re-runs whenever liveWorkers list changes ──
   // Previously sensorUnsub was only set up inside the workers callback closure,
@@ -1130,18 +1256,85 @@ export default function ReportsScreen() {
   const effectiveSensors = Object.keys(liveSensors).length > 0 ? liveSensors : sensors;
   const effectiveAlerts  = liveAlerts.length > 0 ? liveAlerts : alerts;
 
+  useEffect(() => {
+    if (!effectiveWorkers.length) {
+      setPreMonitorWaterByWorker({});
+      return;
+    }
+
+    const parsePreMonitorWaterAvg = (raw: any): number | null => {
+      if (!raw) return null;
+      const values = [raw.level1_water, raw.level2_water, raw.level3_water]
+        .map((v) => (typeof v === 'number' ? v : Number(v)))
+        .filter((v) => !Number.isNaN(v) && v > 0);
+      return values.length ? avg(values) : null;
+    };
+
+    const unsubs = effectiveWorkers.map((worker) =>
+      listenToPreMonitor((worker as any).id, (data) => {
+        setPreMonitorWaterByWorker((prev) => ({
+          ...prev,
+          [(worker as any).id]: parsePreMonitorWaterAvg(data),
+        }));
+      })
+    );
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [effectiveWorkers]);
+
+  const getLiveTimestamp = (rawTs: unknown): number => {
+    const parsed = timestampToDate(rawTs);
+    const now = Date.now();
+    if (!parsed || Number.isNaN(parsed.getTime())) return now;
+
+    const t = parsed.getTime();
+    const oldestAllowed = new Date(2023, 0, 1).getTime();
+    const newestAllowed = now + 24 * 60 * 60 * 1000;
+    if (t < oldestAllowed || t > newestAllowed) return now;
+
+    return t;
+  };
+
+  const readSensorNumber = (sensor: any, keys: string[]): number | null => {
+    for (const key of keys) {
+      const raw = sensor?.[key];
+      if (raw == null || raw === '') continue;
+      const num = typeof raw === 'number' ? raw : Number(raw);
+      if (!Number.isNaN(num)) return num;
+    }
+    return null;
+  };
+
   // Gas readings derived from sensors — recomputed on every sensor update
   const gasReadings = useMemo((): GasReading[] =>
-    Object.entries(effectiveSensors).map(([, s]) => ({
+    Object.entries(effectiveSensors).map(([workerId, s]) => ({
+      workerId,
       zone:       s.zone ?? s.locationLabel ?? 'Unknown',
       sewerLine:  s.manholeId ?? s.locationLabel ?? 'Unknown',
-      ch4:        s.ch4        && s.ch4 > 0        ? s.ch4        : null,
-      h2s:        s.h2s        && s.h2s > 0        ? s.h2s        : null,
-      co:         (s as any).co  && (s as any).co > 0   ? (s as any).co  : null,
-      o2:         (s as any).o2  && (s as any).o2 > 0   ? (s as any).o2  : null,
-      nh3:        (s as any).nh3 && (s as any).nh3 > 0  ? (s as any).nh3 : null,
-      waterLevel: s.waterLevel,
-      timestamp:  s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+      ch4:        (() => {
+        const v = readSensorNumber(s, ['ch4', 'mq4_ppm']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      h2s:        (() => {
+        const v = readSensorNumber(s, ['h2s', 'mq7_ppm']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      co:         (() => {
+        const v = readSensorNumber(s, ['co', 'mq7_ppm', 'h2s']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      o2:         (() => {
+        const v = readSensorNumber(s, ['o2']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      nh3:        (() => {
+        const v = readSensorNumber(s, ['nh3']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      waterLevel: readSensorNumber(s, ['waterLevel', 'water_level']),
+      timestamp:  getLiveTimestamp((s as any).lastUpdated ?? (s as any).last_seen ?? (s as any).timestamp),
     })),
   [effectiveSensors]);
 
@@ -1151,10 +1344,16 @@ export default function ReportsScreen() {
       workerId,
       workerName: effectiveWorkers.find((w: any) => w.id === workerId)?.name ?? workerId,
       zone:       s.zone ?? s.locationLabel ?? 'Unknown',
-      heartRate:  s.heartRate && s.heartRate > 0 ? s.heartRate : null,
-      spo2:       s.spO2      && s.spO2 > 0      ? s.spO2      : null,
+      heartRate:  (() => {
+        const v = readSensorNumber(s, ['heartRate', 'hr']);
+        return v != null && v > 0 ? v : null;
+      })(),
+      spo2:       (() => {
+        const v = readSensorNumber(s, ['spO2', 'spo2']);
+        return v != null && v > 0 ? v : null;
+      })(),
       temperature: null,
-      timestamp:  s.lastUpdated && s.lastUpdated > 0 ? s.lastUpdated : Date.now(),
+      timestamp:  getLiveTimestamp((s as any).lastUpdated ?? (s as any).last_seen ?? (s as any).timestamp),
     })),
   [effectiveSensors, effectiveWorkers]);
 
@@ -1257,10 +1456,18 @@ export default function ReportsScreen() {
     effectiveWorkers.map(worker => ({ worker, sensor: effectiveSensors[(worker as any).id] ?? null })),
   [effectiveWorkers, effectiveSensors]);
 
+  const getAvgWaterLevelByWorker = (workerId: string, gasReadings: GasReading[]) => {
+    const preMonitorAvg = preMonitorWaterByWorker[workerId];
+    if (preMonitorAvg != null) return preMonitorAvg;
+    const workerReadings = gasReadings.filter(r => r.workerId === workerId);
+    const waterLevels = workerReadings.map(r => r.waterLevel).filter((w): w is number => w != null);
+    return waterLevels.length > 0 ? avg(waterLevels) : null;
+  };
+
   const workersData = effectiveWorkers.map(worker => {
     const sensor = effectiveSensors[worker.id];
+    const avgWaterLevel = getAvgWaterLevelByWorker(worker.id, gasReadings);
     const status = sensor ? getSensorStatus(sensor) : null;
-    const overall = status?.overall ?? 'offline';
     return {
       id: worker.id,
       name: worker.name,
@@ -1268,15 +1475,15 @@ export default function ReportsScreen() {
       zone: worker.zone,
       shift: worker.shift,
       phone: worker.phone,
-      bloodGroup: worker.bloodGroup,
-      emergencyContact: worker.emergencyContact,
-      status: overall as 'safe' | 'warning' | 'danger' | 'offline',
+      bloodGroup: worker.bloodGroup ?? 'N/A',
+      emergencyContact: worker.emergencyContact ?? 'N/A',
+      status: sensor ? getSensorStatus(sensor)?.overall ?? 'offline' : 'offline',
       heartRate: sensor?.heartRate,
       spo2: sensor?.spO2,
       ch4: sensor?.ch4,
       co: (sensor as any)?.co,
       h2s: sensor?.h2s,
-      waterLevel: sensor?.waterLevel,
+      waterLevel: avgWaterLevel ?? undefined, // Use average water level during premonitoring
       manholeId: sensor?.manholeId,
       locationLabel: sensor?.locationLabel,
       lastSeen: sensor?.lastUpdated ? new Date(sensor.lastUpdated).toLocaleString('en-IN') : undefined,
@@ -1396,7 +1603,6 @@ export default function ReportsScreen() {
   const TABS = [
     { key: 'overview',    label: 'Overview',   icon: 'view-dashboard-outline' },
     { key: 'workers',     label: 'Workers',    icon: 'account-hard-hat-outline' },
-    { key: 'gas',         label: 'Gas & Env',  icon: 'gas-cylinder' },
     { key: 'compliance',  label: 'Compliance', icon: 'shield-check-outline' },
   ] as const;
 
@@ -1566,7 +1772,12 @@ export default function ReportsScreen() {
               {liveWorkerRows.length === 0
                 ? <Text style={styles.emptyText}>No workers assigned. Add workers to see live data here.</Text>
                 : liveWorkerRows.map(({ worker, sensor }) => (
-                  <LiveWorkerCard key={(worker as any).id} worker={worker} sensor={sensor} />
+                  <LiveWorkerCard
+                    key={(worker as any).id}
+                    worker={worker}
+                    sensor={sensor}
+                    preMonitorWaterLevel={preMonitorWaterByWorker[(worker as any).id] ?? null}
+                  />
                 ))
               }
             </View>
@@ -1594,130 +1805,6 @@ export default function ReportsScreen() {
                   </View>
                 ))}
               </View>
-            </View>
-          </>
-        )}
-
-        {/* ═══════════════ GAS & ENV TAB ═══════════════ */}
-        {activeTab === 'gas' && (
-          <>
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>☁️ Overall Gas Concentration</Text>
-              <Text style={styles.sectionSub}>
-                {periodGasReadings.length} sensor reading{periodGasReadings.length !== 1 ? 's' : ''} · Colour coded by level
-              </Text>
-
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.gaugeRow}>
-                {GAS_CONFIG.map(g => {
-                  const valKey = `avg${g.key.charAt(0).toUpperCase() + g.key.slice(1)}` as keyof typeof overallGas;
-                  const val = overallGas[valKey] as number | null;
-                  return <SemiGauge key={g.key} value={val} cfg={g} size={110} />;
-                })}
-              </ScrollView>
-
-              <View style={styles.gaugeLegendRow}>
-                {(['safe', 'caution', 'danger'] as const).map(lvl => (
-                  <View key={lvl} style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: LEVEL_COLORS[lvl] }]} />
-                    <Text style={styles.legendText}>{lvl.charAt(0).toUpperCase() + lvl.slice(1)}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>🔬 Pre-monitoring Gas Levels</Text>
-              <Text style={styles.sectionSub}>L1 = Safe · L2 = Caution · L3 = Danger</Text>
-              {GAS_CONFIG.map(g => (
-                <GasLevelCard key={g.key} gasKey={g.key} readings={periodGasReadings} />
-              ))}
-
-              <View style={styles.waterSection}>
-                <Text style={styles.sectionTitle}>💧 Water Level</Text>
-                <View style={styles.waterRow}>
-                  {Object.entries(effectiveSensors).map(([wid, s]) => {
-                    const workerName = effectiveWorkers.find((w: any) => w.id === wid)?.name ?? wid;
-                    return (
-                      <View key={wid} style={styles.waterWorkerCell}>
-                        <WaterLevelBar value={s.waterLevel ?? null} />
-                        <Text style={styles.waterWorkerName} numberOfLines={1}>{workerName}</Text>
-                      </View>
-                    );
-                  })}
-                  {Object.keys(effectiveSensors).length === 0 && (
-                    <Text style={styles.emptyText}>No water level data available.</Text>
-                  )}
-                </View>
-              </View>
-            </View>
-
-            {/* Gas Trend — GasLineChart */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>📉 Gas Concentration Trend</Text>
-              <Text style={styles.sectionSub}>Select gas · Colour-coded by threshold level</Text>
-
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.gasTabRow}>
-                {GAS_CONFIG.map(g => {
-                  const active = selectedGas === g.key;
-                  return (
-                    <TouchableOpacity
-                      key={g.key}
-                      onPress={() => setSelectedGas(g.key)}
-                      style={[styles.gasTab, active && { backgroundColor: g.color, borderColor: g.color }]}
-                    >
-                      <Text style={[styles.gasTabText, active && { color: '#fff' }]}>{g.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-
-              <GasLineChart data={gasTrendData} cfg={selectedGasCfg} />
-              <View style={styles.thresholdLegend}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.safe }]} />
-                  <Text style={styles.legendText}>L1 Safe ≤{' '}{selectedGasCfg.l1}{selectedGasCfg.unit}</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.caution }]} />
-                  <Text style={styles.legendText}>L2 Caution ≤{' '}{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendLine, { backgroundColor: LEVEL_COLORS.danger }]} />
-                  <Text style={styles.legendText}>L3 Danger >{' '}{selectedGasCfg.l2}{selectedGasCfg.unit}</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>📍 Gas by Zone / Sewer Line</Text>
-              {gasStats.length === 0
-                ? <Text style={styles.emptyText}>No gas readings for this period.</Text>
-                : gasStats.map((z, i) => (
-                  <View key={i} style={styles.gasZoneRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.gasZoneName}>{z.zone}</Text>
-                      <Text style={styles.gasZoneMeta}>{z.sewerLine} · {z.readingsCount} readings</Text>
-                    </View>
-                    <View style={styles.gasZonePills}>
-                      {[
-                        { key: 'co',  val: z.avgCo  },
-                        { key: 'ch4', val: z.avgCh4 },
-                      ].map(({ key, val }) => {
-                        const lvl = gasLevel(key, val);
-                        return val != null ? (
-                          <View key={key} style={[styles.gasMiniPill, { backgroundColor: LEVEL_BG[lvl] }]}>
-                            <Text style={[styles.gasMiniPillText, { color: LEVEL_COLORS[lvl] }]}>
-                              {key.toUpperCase()} {val}
-                            </Text>
-                          </View>
-                        ) : null;
-                      })}
-                    </View>
-                  </View>
-                ))
-              }
             </View>
           </>
         )}
@@ -2022,6 +2109,7 @@ const styles = StyleSheet.create({
   waterBarFill:    { width: '100%', borderRadius: 10 },
   waterBarValue:   { fontSize: 10, fontWeight: '700', marginTop: 3 },
   waterWorkerName: { fontSize: 10, color: '#64748B', marginTop: 4, textAlign: 'center', maxWidth: 64 },
+  waterWorkerAvg: { fontSize: 9, color: '#94A3B8', marginTop: 2, textAlign: 'center', maxWidth: 64 },
 
   // Gas zone row
   gasZoneRow: {

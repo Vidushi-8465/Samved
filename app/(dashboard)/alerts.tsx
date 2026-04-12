@@ -7,6 +7,7 @@ import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
 import { resolveAlert, acknowledgeAlert, Alert as AlertType } from '@/services/sensorService';
+import { stopAlertSound } from '@/utils/alertSound';
 
 const ALERT_ICONS: Record<string, string> = {
   SOS: 'alarm-light',
@@ -83,6 +84,7 @@ export default function AlertsScreen() {
 
   const doAcknowledge = async (alert: AlertType) => {
     try {
+      await stopAlertSound();
       await acknowledgeAlert(alert.id, manager?.name || 'Manager');
     } catch (e) {
       Alert.alert('Error', 'Could not acknowledge alert. Check connection.');
