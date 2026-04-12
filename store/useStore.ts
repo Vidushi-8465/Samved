@@ -191,7 +191,24 @@ export const useStore = create<AppState>((set, get) => ({
           } as Alert);
         }
 
-        if (sensor.sosAlert) {
+        const posture = (sensor.workerPosture ?? '').toLowerCase();
+        const hasFallEmergency = !!sensor.fallAlert || !!sensor.fallDetected || sensor.motionAlert === 1 || sensor.motionAlert === 4 || posture === 'fallen' || posture === 'fall';
+        const hasSosEmergency = !!sensor.sosAlert || !!sensor.sosTriggered;
+        const combinedEmergencyValue = hasFallEmergency && hasSosEmergency ? 'SOS+fall detected' : null;
+
+        if (hasFallEmergency) {
+          generatedAlerts.push({
+            id: `${id}-fall-${Date.now()}`,
+            workerId: id,
+            type: 'FALL',
+            workerName: id,
+            zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
+            value: combinedEmergencyValue || 'Fall Detected',
+            resolved: false,
+            timestamp: Timestamp.now(),
+          } as Alert);
+        } else if (hasSosEmergency) {
           generatedAlerts.push({
             id: `${id}-sos-${Date.now()}`,
             workerId: id,
@@ -199,21 +216,7 @@ export const useStore = create<AppState>((set, get) => ({
             workerName: id,
             zone: sensor.locationLabel || 'Unknown',
             manholeId: sensor.manholeId || '—',
-            value: 'SOS Triggered',
-            resolved: false,
-            timestamp: Timestamp.now(),
-          } as Alert);
-        }
-
-        if (sensor.fallAlert) {
-          generatedAlerts.push({
-            id: `${id}-fall-${Date.now()}`,
-            workerId: id,
-            type: 'INACTIVITY',
-            workerName: id,
-            zone: sensor.locationLabel || 'Unknown',
-            manholeId: sensor.manholeId || '—',
-            value: 'Fall Detected',
+            value: 'SOS Pressed',
             resolved: false,
             timestamp: Timestamp.now(),
           } as Alert);

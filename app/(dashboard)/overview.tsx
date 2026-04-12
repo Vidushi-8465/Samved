@@ -20,6 +20,7 @@ import { rtdb } from '@/services/firebase';
 import { playAlertSound } from '@/utils/alertSound';
 import { isHiddenWorker } from '@/constants/hiddenWorkers';
 import { THRESHOLDS } from './workers'; // ← import shared THRESHOLDS from workers
+import { triggerBuzzer } from '@/services/buzzerService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
@@ -71,6 +72,151 @@ function useRealTimeClock() {
   }, []);
   return now;
 }
+
+// ─── Warning Banner Component
+function WarningBanner({ visible, onOk, onBuzzer }: {
+  visible: boolean;
+  onOk: () => void;
+  onBuzzer: () => void;
+}) {
+  const [timeLeft, setTimeLeft] = useState(7);
+
+  useEffect(() => {
+    if (!visible) {
+      setTimeLeft(7);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          onOk();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [visible, onOk]);
+
+  if (!visible) return null;
+
+  return (
+    <View style={wb.banner}>
+      <View style={wb.content}>
+        <MaterialCommunityIcons name="alert" size={24} color="#D68910" />
+        <View style={wb.textContainer}>
+          <Text style={wb.title}>Warning Level Detected</Text>
+          <Text style={wb.subtitle}>Sensor values are in warning range</Text>
+        </View>
+        <View style={wb.buttons}>
+          <TouchableOpacity style={wb.okButton} onPress={onOk}>
+            <Text style={wb.okButtonText}>OK</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={wb.buzzerButton} onPress={onBuzzer}>
+            <MaterialCommunityIcons name="bell-ring" size={16} color="#fff" />
+            <Text style={wb.buzzerButtonText}>Buzzer</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={wb.progressBar}>
+        <View style={[wb.progressFill, { width: `${(timeLeft / 7) * 100}%` }]} />
+      </View>
+    </View>
+  );
+}
+
+const wb = StyleSheet.create({
+  banner: { backgroundColor: '#F7DC6F', padding: 12, width: '100%', alignItems: 'center', gap: 10, borderBottomWidth: 2, borderColor: '#F2C464' },
+  content: { flexDirection: 'row', alignItems: 'center', gap: 16, width: '100%', paddingHorizontal: 14 },
+  textContainer: { flex: 1 },
+  title: { color: '#D68910', fontSize: 16, fontFamily: 'Poppins_700Bold' },
+  subtitle: { color: '#D68910', fontSize: 14, fontFamily: 'Poppins_400Regular' },
+  buttons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  okButton: { backgroundColor: '#fff', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 16, marginTop: 4 },
+  okButtonText: { color: '#D68910', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  buzzerButton: { backgroundColor: '#D68910', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 16, marginTop: 4 },
+  buzzerButtonText: { color: '#fff', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  progressBar: { backgroundColor: '#F2C464', borderRadius: 10, padding: 2, width: '100%' },
+  progressFill: { backgroundColor: '#D68910', borderRadius: 10, height: 4 },
+});
+
+// ─── Danger Banner Component
+function DangerBanner({ visible, onOk, onBuzzer, onEvacuate }: {
+  visible: boolean;
+  onOk: () => void;
+  onBuzzer: () => void;
+  onEvacuate: () => void;
+}) {
+  const [timeLeft, setTimeLeft] = useState(7);
+
+  useEffect(() => {
+    if (!visible) {
+      setTimeLeft(7);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          onOk();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [visible, onOk]);
+
+  if (!visible) return null;
+
+  return (
+    <View style={db.banner}>
+      <View style={db.content}>
+        <MaterialCommunityIcons name="alert-octagon" size={24} color="#C0392B" />
+        <View style={db.textContainer}>
+          <Text style={db.title}>DANGER LEVEL DETECTED</Text>
+          <Text style={db.subtitle}>Gas levels are at dangerous levels</Text>
+        </View>
+        <View style={db.buttons}>
+          <TouchableOpacity style={db.okButton} onPress={onOk}>
+            <Text style={db.okButtonText}>OK</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={db.buzzerButton} onPress={onBuzzer}>
+            <MaterialCommunityIcons name="bell-ring" size={16} color="#fff" />
+            <Text style={db.buzzerButtonText}>Buzzer</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={db.evacuateButton} onPress={onEvacuate}>
+            <MaterialCommunityIcons name="run" size={16} color="#fff" />
+            <Text style={db.evacuateButtonText}>Evacuate</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={db.progressBar}>
+        <View style={[db.progressFill, { width: `${(timeLeft / 7) * 100}%` }]} />
+      </View>
+    </View>
+  );
+}
+
+const db = StyleSheet.create({
+  banner: { backgroundColor: '#FADBD8', padding: 12, width: '100%', alignItems: 'center', gap: 10, borderBottomWidth: 2, borderColor: '#E74C3C' },
+  content: { flexDirection: 'row', alignItems: 'center', gap: 16, width: '100%', paddingHorizontal: 14 },
+  textContainer: { flex: 1 },
+  title: { color: '#C0392B', fontSize: 16, fontFamily: 'Poppins_700Bold' },
+  subtitle: { color: '#C0392B', fontSize: 14, fontFamily: 'Poppins_400Regular' },
+  buttons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  okButton: { backgroundColor: '#fff', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 16, marginTop: 4 },
+  okButtonText: { color: '#C0392B', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  buzzerButton: { backgroundColor: '#C0392B', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 16, marginTop: 4 },
+  buzzerButtonText: { color: '#fff', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  evacuateButton: { backgroundColor: '#E74C3C', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 16, marginTop: 4 },
+  evacuateButtonText: { color: '#fff', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  progressBar: { backgroundColor: '#F5B7B1', borderRadius: 10, padding: 2, width: '100%' },
+  progressFill: { backgroundColor: '#C0392B', borderRadius: 10, height: 4 },
+});
 
 // ─── SOS Modal ────────────────────────────────────────────────────────────────
 
@@ -216,19 +362,19 @@ function WorkerConditionCard({
   const posture = (sensor?.workerPosture ?? '').toLowerCase();
   const isInside = !!timer?.running;
 
-  // Determine HR status using active (sobriety-aware) thresholds
+  // Use the same status logic as sensorService for consistency
   const hrValue = sensor?.heartRate ?? 0;
   const spO2Value = sensor?.spO2 ?? 0;
+  
+  // Determine HR status using active (sobriety-aware) thresholds
   const hrStatus: SafetyStatus =
     hrValue <= 0 ? 'safe'
     : hrValue < activeThresholds.hrLow || hrValue > activeThresholds.hrHigh ? 'danger'
     : hrValue < activeThresholds.hrLow + 10 || hrValue > activeThresholds.hrHigh - 10 ? 'warning'
     : 'safe';
-  const spO2Status: SafetyStatus =
-    spO2Value <= 0 ? 'safe'
-    : spO2Value < activeThresholds.spO2Min ? 'danger'
-    : spO2Value < activeThresholds.spO2Min + 2 ? 'warning'
-    : 'safe';
+    
+  // Use the same SpO2 logic as getSensorStatus for consistency
+  const spO2Status: SafetyStatus = status?.spO2 ?? 'safe';
 
   return (
     <View style={wc.card}>
@@ -911,6 +1057,8 @@ export default function OverviewScreen() {
   const T = getText(language);
   const now = useRealTimeClock();
   const [showSOS, setShowSOS] = useState(false);
+  const [showWarning, setShowWarning] = useState(false);
+  const [showDanger, setShowDanger] = useState(false);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const workerScrollRef = useRef<ScrollView | null>(null);
   const panResponder = useRef<ReturnType<typeof PanResponder.create> | null>(null);
@@ -999,6 +1147,82 @@ export default function OverviewScreen() {
     });
     seenSensorEmergencyIds.current = currentEmergencyIds;
   }, [sensors]);
+
+  // Warning detection logic
+  useEffect(() => {
+    if (!selectedWorkerId || !sensors[selectedWorkerId]) {
+      setShowWarning(false);
+      setShowDanger(false);
+      return;
+    }
+
+    const sensor = sensors[selectedWorkerId];
+    const status = getSensorStatus(sensor);
+    
+    // Show warning banner if any sensor is in warning state
+    const hasWarning = status.overall === 'warning' || 
+      status.ch4 === 'warning' || 
+      status.h2s === 'warning' || 
+      status.waterLevel === 'warning' || 
+      status.heartRate === 'warning' || 
+      status.spO2 === 'warning';
+
+    setShowWarning(hasWarning);
+  }, [selectedWorkerId, sensors]);
+
+  // Danger detection logic (gas levels only)
+  useEffect(() => {
+    if (!selectedWorkerId || !sensors[selectedWorkerId]) {
+      setShowDanger(false);
+      return;
+    }
+
+    const sensor = sensors[selectedWorkerId];
+    const status = getSensorStatus(sensor);
+    
+    // Show danger banner only for gas levels (CH4, H2S, CO) in danger state
+    const hasGasDanger = status.ch4 === 'danger' || status.h2s === 'danger' || status.co === 'danger';
+
+    setShowDanger(hasGasDanger);
+  }, [selectedWorkerId, sensors]);
+
+  // Warning banner handlers
+  const handleWarningOk = () => {
+    setShowWarning(false);
+  };
+
+  const handleWarningBuzzer = async () => {
+    if (selectedWorkerId) {
+      try {
+        await triggerBuzzer(selectedWorkerId, 5000);
+        setShowWarning(false);
+      } catch (error) {
+        console.error('Failed to trigger buzzer:', error);
+      }
+    }
+  };
+
+  // Danger banner handlers
+  const handleDangerOk = () => {
+    setShowDanger(false);
+  };
+
+  const handleDangerBuzzer = async () => {
+    if (selectedWorkerId) {
+      try {
+        await triggerBuzzer(selectedWorkerId, 5000);
+        setShowDanger(false);
+      } catch (error) {
+        console.error('Failed to trigger buzzer:', error);
+      }
+    }
+  };
+
+  const handleDangerEvacuate = () => {
+    // Navigate to alerts page for evacuation procedures
+    setShowDanger(false);
+    router.push('/(dashboard)/alerts');
+  };
 
   // ── TIME IN / TIME OUT TRACKER ────────────────────────────────────────────
   const [workerTimers, setWorkerTimers] = useState<Record<string, { timeIn: Date; elapsed: number; running: boolean }>>({});
@@ -1104,6 +1328,21 @@ export default function OverviewScreen() {
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
       <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
+      
+      {/* Warning Banner */}
+      <WarningBanner 
+        visible={showWarning} 
+        onOk={handleWarningOk} 
+        onBuzzer={handleWarningBuzzer} 
+      />
+
+      {/* Danger Banner */}
+      <DangerBanner 
+        visible={showDanger} 
+        onOk={handleDangerOk} 
+        onBuzzer={handleDangerBuzzer} 
+        onEvacuate={handleDangerEvacuate} 
+      />
 
       {/* TOP BAR */}
       <View style={main.topBar}>

@@ -333,8 +333,14 @@ export default function TestScreen() {
     setPushing(true);
     try {
       await pushSensor(w, data);
-      if (data.sosTriggered)               await pushAlert(w, 'SOS',          'SOS triggered');
-      if (data.fallDetected)               await pushAlert(w, 'FALL',         'Fall detected');
+      const isFall = !!data.fallDetected;
+      const isSos = !!data.sosTriggered;
+
+      if (isFall) {
+        await pushAlert(w, 'FALL', isSos ? 'SOS+fall detected' : 'Fall detected');
+      } else if (isSos) {
+        await pushAlert(w, 'SOS', 'SOS Pressed');
+      }
       if ((data.ch4 as number) > 5000)     await pushAlert(w, 'CH4_CRITICAL', `${data.ch4} ppm`);
       if ((data.co  as number) > 200)      await pushAlert(w, 'CO_CRITICAL',  `${data.co} ppm`);
       setLastMsg(`${w.name} updated — ${new Date().toLocaleTimeString()}`);

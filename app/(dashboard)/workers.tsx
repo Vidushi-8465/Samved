@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Modal, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -244,13 +244,11 @@ const createEmptyForm = () => ({
 // ─── Worker Detail Modal ──────────────────────────────────────────────────────
 
 function WorkerDetailModal({
-  worker, sensor, onClose, activeBuzzers, onBuzzerPress, sobrietyMap, onSobrietyChange,
+  worker, sensor, onClose, sobrietyMap, onSobrietyChange,
 }: {
   worker: WorkerProfile;
   sensor?: SensorData;
   onClose: () => void;
-  activeBuzzers: Set<string>;
-  onBuzzerPress: (workerId: string) => void;
   sobrietyMap: Record<string, WorkerSobrietyInfo>;
   onSobrietyChange: (workerId: string, state: SobrietyState) => void;
 }) {
@@ -407,28 +405,7 @@ function WorkerDetailModal({
                     <Text style={[styles.modeText, { color: sensor.mode === 'premonitoring' ? Colors.info : Colors.warning }]}>
                       {sensor.mode === 'premonitoring' ? '🔍 Pre-monitoring Mode' : '👷 Worker Inside — Monitoring'}
                     </Text>
-                  </View>
-
-                  {/* Buzzer Control */}
-                  <View style={styles.modalBuzzerSection}>
-                    <Text style={styles.modalBuzzerLabel}>Hardware Buzzer Control</Text>
-                    <TouchableOpacity
-                      style={[styles.modalBuzzerBtn, activeBuzzers.has(worker.id) && styles.modalBuzzerBtnActive]}
-                      onPress={() => onBuzzerPress(worker.id)}
-                    >
-                      <MaterialCommunityIcons
-                        name={activeBuzzers.has(worker.id) ? 'bell-ring' : 'bell-outline'}
-                        size={24}
-                        color={activeBuzzers.has(worker.id) ? Colors.white : Colors.primary}
-                      />
-                      <Text style={[styles.modalBuzzerBtnText, activeBuzzers.has(worker.id) && styles.modalBuzzerBtnTextActive]}>
-                        {activeBuzzers.has(worker.id) ? 'Stop Buzzer' : 'Ring Buzzer (5s)'}
-                      </Text>
-                    </TouchableOpacity>
-                    {activeBuzzers.has(worker.id) && (
-                      <Text style={styles.modalBuzzerStatus}>Buzzer will automatically stop in 5 seconds...</Text>
-                    )}
-                  </View>
+                  </View>                
                 </>
               ) : (
                 <View style={styles.noSensor}>
@@ -444,29 +421,6 @@ function WorkerDetailModal({
   );
 }
 
-// ─── Buzzer helper ────────────────────────────────────────────────────────────
-
-const triggerBuzzer = async (workerId: string, duration: number = 5000) => {
-  try {
-    await set(ref(rtdb, `workers/${workerId}/buzzer`), {
-      active: true,
-      startTime: Date.now(),
-      duration,
-    });
-    setTimeout(async () => {
-      try {
-        await set(ref(rtdb, `workers/${workerId}/buzzer`), { active: false, stopTime: Date.now() });
-      } catch (error) {
-        console.error('Failed to stop buzzer:', error);
-      }
-    }, duration);
-    return true;
-  } catch (error) {
-    console.error('Failed to trigger buzzer:', error);
-    return false;
-  }
-};
-
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function WorkersScreen() {
@@ -478,8 +432,6 @@ export default function WorkersScreen() {
   const [showAddWorker, setShowAddWorker] = useState(false);
   const [savingWorker, setSavingWorker] = useState(false);
   const [form, setForm] = useState(createEmptyForm());
-  const [activeBuzzers, setActiveBuzzers] = useState<Set<string>>(new Set());
-  const buzzerTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const [sobrietyMap, setSobrietyMap] = useState<Record<string, WorkerSobrietyInfo>>({});
 
   // ── Load sobriety from Firebase ───────────────────────────────────────────
@@ -506,50 +458,6 @@ export default function WorkersScreen() {
     } catch (error) {
       console.error('Failed to save sobriety state:', error);
       Alert.alert('Error', 'Could not save pre-entry state. Please try again.');
-    }
-  };
-
-  // ── Buzzer listeners ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const unsubscribers = workers.map(worker => {
-      const buzzerRef = ref(rtdb, `workers/${worker.id}/buzzer`);
-      const unsubscribe = onValue(buzzerRef, snapshot => {
-        const buzzerData = snapshot.val();
-        if (buzzerData?.active) {
-          setActiveBuzzers(prev => new Set(prev).add(worker.id));
-          const existingTimer = buzzerTimers.current.get(worker.id);
-          if (existingTimer) clearTimeout(existingTimer);
-          const timer = setTimeout(() => {
-            setActiveBuzzers(prev => { const s = new Set(prev); s.delete(worker.id); return s; });
-            buzzerTimers.current.delete(worker.id);
-          }, buzzerData.duration || 5000) as unknown as NodeJS.Timeout;
-          buzzerTimers.current.set(worker.id, timer);
-        } else {
-          setActiveBuzzers(prev => { const s = new Set(prev); s.delete(worker.id); return s; });
-          const existingTimer = buzzerTimers.current.get(worker.id);
-          if (existingTimer) { clearTimeout(existingTimer); buzzerTimers.current.delete(worker.id); }
-        }
-      });
-      return unsubscribe;
-    });
-    return () => {
-      unsubscribers.forEach(u => u());
-      buzzerTimers.current.forEach(t => clearTimeout(t));
-      buzzerTimers.current.clear();
-    };
-  }, [workers]);
-
-  const handleBuzzer = async (workerId: string) => {
-    if (activeBuzzers.has(workerId)) {
-      try {
-        await set(ref(rtdb, `workers/${workerId}/buzzer`), { active: false, stopTime: Date.now() });
-        const timer = buzzerTimers.current.get(workerId);
-        if (timer) { clearTimeout(timer); buzzerTimers.current.delete(workerId); }
-        setActiveBuzzers(prev => { const s = new Set(prev); s.delete(workerId); return s; });
-      } catch (error) { console.error('Failed to stop buzzer:', error); }
-    } else {
-      const success = await triggerBuzzer(workerId, 5000);
-      if (!success) Alert.alert('Error', 'Failed to trigger buzzer. Please try again.');
     }
   };
 
@@ -722,16 +630,6 @@ export default function WorkersScreen() {
                     </Text>
                   </View>
                 )}
-                <TouchableOpacity
-                  style={[styles.buzzerBtn, activeBuzzers.has(item.id) && styles.buzzerBtnActive]}
-                  onPress={() => handleBuzzer(item.id)}
-                >
-                  <MaterialCommunityIcons
-                    name={activeBuzzers.has(item.id) ? 'bell-ring' : 'bell-outline'}
-                    size={16}
-                    color={activeBuzzers.has(item.id) ? Colors.white : Colors.primary}
-                  />
-                </TouchableOpacity>
                 <MaterialCommunityIcons name="chevron-right" size={18} color={Colors.textMuted} />
               </View>
             </TouchableOpacity>
@@ -744,8 +642,6 @@ export default function WorkersScreen() {
           worker={selectedWorker}
           sensor={sensors[selectedWorker.id]}
           onClose={() => setSelectedWorker(null)}
-          activeBuzzers={activeBuzzers}
-          onBuzzerPress={handleBuzzer}
           sobrietyMap={sobrietyMap}
           onSobrietyChange={handleSobrietyChange}
         />
