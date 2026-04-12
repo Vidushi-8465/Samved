@@ -20,7 +20,7 @@ import { rtdb } from '@/services/firebase';
 import { playAlertSound } from '@/utils/alertSound';
 import { isHiddenWorker } from '@/constants/hiddenWorkers';
 import { THRESHOLDS } from './workers'; // ← import shared THRESHOLDS from workers
-import { triggerBuzzer } from '@/services/buzzerService';
+import { triggerBuzzer, sendWarnCommand, sendEvacuateCommand } from '@/services/buzzerService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isTablet = SCREEN_WIDTH > 768;
@@ -115,9 +115,9 @@ function WarningBanner({ visible, onOk, onBuzzer }: {
             <Text style={wb.okButtonText}>OK</Text>
           </TouchableOpacity>
           <TouchableOpacity style={wb.buzzerButton} onPress={onBuzzer}>
-            <MaterialCommunityIcons name="bell-ring" size={16} color="#fff" />
-            <Text style={wb.buzzerButtonText}>Buzzer</Text>
-          </TouchableOpacity>
+  <MaterialCommunityIcons name="led-on" size={16} color="#fff" />
+  <Text style={wb.buzzerButtonText}>Warn Worker</Text>
+</TouchableOpacity>
         </View>
       </View>
       <View style={wb.progressBar}>
@@ -1191,39 +1191,46 @@ export default function OverviewScreen() {
     setShowWarning(false);
   };
 
-  const handleWarningBuzzer = async () => {
-    if (selectedWorkerId) {
-      try {
-        await triggerBuzzer(selectedWorkerId, 5000);
-        setShowWarning(false);
-      } catch (error) {
-        console.error('Failed to trigger buzzer:', error);
-      }
-    }
-  };
+  // Warning banner — "Warn" button → RED LED glows on device
+const handleWarningBuzzer = async () => {
+  if (!selectedWorkerId) return;
+  try {
+    await sendWarnCommand(selectedWorkerId);  // ← red LED, not buzzer
+    setShowWarning(false);
+  } catch (error) {
+    console.error('Failed to send warn command:', error);
+  }
+};
 
   // Danger banner handlers
   const handleDangerOk = () => {
     setShowDanger(false);
   };
 
-  const handleDangerBuzzer = async () => {
-    if (selectedWorkerId) {
-      try {
-        await triggerBuzzer(selectedWorkerId, 5000);
-        setShowDanger(false);
-      } catch (error) {
-        console.error('Failed to trigger buzzer:', error);
-      }
-    }
-  };
+  // Danger banner — "Buzzer" button → buzzer beeps on device
+const handleDangerBuzzer = async () => {
+  if (!selectedWorkerId) return;
+  try {
+    await triggerBuzzer(selectedWorkerId, 5000);
+    setShowDanger(false);
+  } catch (error) {
+    console.error('Failed to trigger buzzer:', error);
+  }
+};
 
-  const handleDangerEvacuate = () => {
-    // Navigate to alerts page for evacuation procedures
+ // Danger banner — "Evacuate" button → continuous alarm on device
+const handleDangerEvacuate = async () => {
+  if (!selectedWorkerId) return;
+  try {
+    await sendEvacuateCommand(selectedWorkerId);
     setShowDanger(false);
     router.push('/(dashboard)/alerts');
-  };
-
+  } catch (error) {
+    console.error('Failed to send evacuate command:', error);
+    setShowDanger(false);
+    router.push('/(dashboard)/alerts');
+  }
+};
   // ── TIME IN / TIME OUT TRACKER ────────────────────────────────────────────
   const [workerTimers, setWorkerTimers] = useState<Record<string, { timeIn: Date; elapsed: number; running: boolean }>>({});
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);

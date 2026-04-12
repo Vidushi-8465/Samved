@@ -150,6 +150,43 @@ function getAvgWaterLevelByWorker(workerId: string, gasReadings: GasReading[]): 
   return avg(waterLevels);
 }
 
+function getPreMonitoringStatus(workerId: string, gasReadings: GasReading[]): 'safe' | 'warning' | 'danger' | 'offline' {
+  const workerReadings = gasReadings.filter(r => r.workerId === workerId);
+  
+  if (workerReadings.length === 0) return 'offline';
+  
+  // Get average values for each metric
+  const avgCh4 = avg(workerReadings.map(r => r.ch4).filter((v): v is number => v != null && v > 0));
+  const avgCo = avg(workerReadings.map(r => r.co).filter((v): v is number => v != null && v > 0));
+  const avgH2s = avg(workerReadings.map(r => r.h2s).filter((v): v is number => v != null && v > 0));
+  const avgWaterLevel = avg(workerReadings.map(r => r.waterLevel).filter((v): v is number => v != null && v > 0));
+  
+  // Determine status for each metric using same thresholds as getSensorStatus
+  const ch4Status: 'safe' | 'warning' | 'danger' = 
+    avgCh4 != null && avgCh4 >= 5000 ? 'danger' :
+    avgCh4 != null && avgCh4 >= 1000 ? 'warning' : 'safe';
+  
+  const coStatus: 'safe' | 'warning' | 'danger' = 
+    avgCo != null && avgCo >= 200 ? 'danger' :
+    avgCo != null && avgCo >= 25 ? 'warning' : 'safe';
+  
+  const h2sStatus: 'safe' | 'warning' | 'danger' = 
+    avgH2s != null && avgH2s >= 100 ? 'danger' :
+    avgH2s != null && avgH2s >= 10 ? 'warning' : 'safe';
+  
+  const waterStatus: 'safe' | 'warning' | 'danger' = 
+    avgWaterLevel != null && avgWaterLevel <= 50 ? 'danger' :
+    avgWaterLevel != null && avgWaterLevel <= 120 ? 'warning' : 'safe';
+  
+  // Overall status is the worst of all metrics
+  const statuses = [ch4Status, coStatus, h2sStatus, waterStatus];
+  
+  if (statuses.includes('danger')) return 'danger';
+  if (statuses.includes('warning')) return 'warning';
+  if (statuses.includes('safe')) return 'safe';
+  return 'offline';
+}
+
 function fmtVal(val: number | null | undefined, unit: string): string {
   return val == null ? 'N/A' : `${val}${unit}`;
 }
@@ -775,10 +812,10 @@ function GasLevelCard({ gasKey, readings }: {
 
 // ─── Live Worker Card ──────────────────────────────────────────────────────────
 
-function LiveWorkerCard({ worker, sensor, preMonitorWaterLevel }: {
+function LiveWorkerCard({ worker, sensor, preMonitoringStatus }: {
   worker: WorkerProfile;
   sensor?: SensorData | null;
-  preMonitorWaterLevel?: number | null;
+  preMonitoringStatus?: 'safe' | 'warning' | 'danger' | 'offline';
 }) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const overall = status?.overall ?? 'offline';
@@ -794,23 +831,38 @@ function LiveWorkerCard({ worker, sensor, preMonitorWaterLevel }: {
     : overall === 'safe'    ? Colors.successBg
     : Colors.background;
 
-  const effectiveWaterLevel = (sensor?.waterLevel != null && sensor.waterLevel > 0)
-    ? sensor.waterLevel
-    : (preMonitorWaterLevel ?? null);
+  const preStatusColor = preMonitoringStatus === 'danger' ? Colors.danger
+    : preMonitoringStatus === 'warning' ? Colors.warning
+    : preMonitoringStatus === 'safe'    ? Colors.success
+    : Colors.textMuted;
+
+  const preStatusBg = preMonitoringStatus === 'danger' ? Colors.dangerBg
+    : preMonitoringStatus === 'warning' ? Colors.warningBg
+    : preMonitoringStatus === 'safe'    ? Colors.successBg
+    : Colors.background;
 
   const metrics = [
     { label: 'HR',    value: sensor?.heartRate ? `${sensor.heartRate} bpm` : '—', icon: 'heart-pulse',   lvl: sensor?.heartRate ? (sensor.heartRate < 60 || sensor.heartRate > 100 ? 'caution' : 'safe') : 'na' },
     { label: 'SpO₂', value: sensor?.spO2       ? `${sensor.spO2}%`         : '—', icon: 'lungs',         lvl: sensor?.spO2 ? (sensor.spO2 < 90 ? 'danger' : sensor.spO2 < 95 ? 'caution' : 'safe') : 'na' },
     { label: 'CH₄',  value: sensor?.ch4        ? `${sensor.ch4} ppm`       : '—', icon: 'fire',          lvl: gasLevel('ch4', sensor?.ch4 ?? null) },
     { label: 'CO',   value: (sensor as any)?.co ? `${(sensor as any).co} ppm` : '—', icon: 'cloud-outline', lvl: gasLevel('co', (sensor as any)?.co ?? null) },
-    { label: 'Water',value: fmtCm(effectiveWaterLevel),                              icon: 'water',         lvl: effectiveWaterLevel != null ? (effectiveWaterLevel > 120 ? 'danger' : effectiveWaterLevel > 50 ? 'caution' : 'safe') : 'na' },
+    { label: 'Water',value: fmtCm(sensor?.waterLevel),                              icon: 'water',         lvl: sensor?.waterLevel != null ? (sensor.waterLevel > 120 ? 'danger' : sensor.waterLevel > 50 ? 'caution' : 'safe') : 'na' },
   ] as const;
 
   return (
     <View style={[styles.liveWorkerCard, { borderLeftColor: stateColor, borderLeftWidth: 3 }]}>
       <View style={styles.liveWorkerTop}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.liveWorkerName}>{worker.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.liveWorkerName}>{worker.name}</Text>
+            {preMonitoringStatus && (
+              <View style={[styles.preMonitoringTag, { backgroundColor: preStatusBg }]}>
+                <Text style={[styles.preMonitoringTagText, { color: preStatusColor }]}>
+                  Pre-Monitoring: {preMonitoringStatus.toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.liveWorkerMeta}>{worker.employeeId} · {worker.zone}</Text>
         </View>
         <View style={[styles.statusPill, { backgroundColor: stateBg }]}>
@@ -838,10 +890,6 @@ function LiveWorkerCard({ worker, sensor, preMonitorWaterLevel }: {
           📍 {sensor.manholeId ?? '—'} · {sensor.locationLabel ?? '—'}
           {'  '}RSSI: {sensor.rssi != null ? `${sensor.rssi} dBm` : '—'}
         </Text>
-      )}
-
-      {preMonitorWaterLevel != null && (
-        <Text style={styles.liveWorkerFooter}>Pre-monitor water avg: {fmtCm(preMonitorWaterLevel)}</Text>
       )}
     </View>
   );
@@ -1771,14 +1819,17 @@ export default function ReportsScreen() {
               </Text>
               {liveWorkerRows.length === 0
                 ? <Text style={styles.emptyText}>No workers assigned. Add workers to see live data here.</Text>
-                : liveWorkerRows.map(({ worker, sensor }) => (
-                  <LiveWorkerCard
-                    key={(worker as any).id}
-                    worker={worker}
-                    sensor={sensor}
-                    preMonitorWaterLevel={preMonitorWaterByWorker[(worker as any).id] ?? null}
-                  />
-                ))
+                : liveWorkerRows.map(({ worker, sensor }) => {
+                    const preStatus = getPreMonitoringStatus((worker as any).id, gasReadings);
+                    return (
+                      <LiveWorkerCard
+                        key={(worker as any).id}
+                        worker={worker}
+                        sensor={sensor}
+                        preMonitoringStatus={preStatus}
+                      />
+                    );
+                  })
               }
             </View>
 
@@ -2057,6 +2108,8 @@ const styles = StyleSheet.create({
   metricCellLabel: { fontSize: 10, color: '#64748B', marginTop: 3, marginBottom: 1 },
   metricCellValue: { fontSize: 13, fontWeight: '700' },
   liveWorkerFooter:{ marginTop: 10, fontSize: 11, color: '#94A3B8' },
+  preMonitoringTag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, marginTop: 4 },
+  preMonitoringTagText: { fontSize: 9, fontWeight: '700' },
 
   // Gauges
   gaugeRow:       { gap: 12, paddingVertical: 8 },
