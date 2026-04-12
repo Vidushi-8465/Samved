@@ -256,19 +256,42 @@ export async function stopAlertSound(): Promise<void> {
   }
 
   // Mobile — unload the persistent sound instance
-  if (!_sound) return;
+  if (!_sound) {
+    console.log('[alertSound] No sound instance to stop');
+    return;
+  }
+  
   try {
-    const status = await _sound.getStatusAsync();
-    if (status.isLoaded) {
-      await _sound.stopAsync();
-      await _sound.unloadAsync();
+    console.log('[alertSound] Stopping mobile alert sound...');
+    
+    // First try to set looping to false to prevent re-triggering
+    try {
+      await _sound.setIsLoopingAsync(false);
+    } catch (e) {
+      // Some versions might not support this method
+      console.log('[alertSound] Could not set looping to false:', e);
     }
+    
+    // Stop the sound
+    await _sound.stopAsync();
+    console.log('[alertSound] Sound stopped');
+    
+    // Unload to completely release resources
+    await _sound.unloadAsync();
+    console.log('[alertSound] Sound unloaded');
+    
   } catch (error) {
-    // Sound may already be unloaded — safe to ignore
-    console.warn('[alertSound] stopAlertSound error (usually safe):', error);
+    console.error('[alertSound] Error stopping mobile sound:', error);
+    // Force cleanup even if stop fails
+    try {
+      await _sound.unloadAsync();
+    } catch (unloadError) {
+      console.error('[alertSound] Error during force unload:', unloadError);
+    }
   } finally {
     _sound = null;
     _isPlaying = false;
+    console.log('[alertSound] Mobile sound cleanup complete');
   }
 }
 
