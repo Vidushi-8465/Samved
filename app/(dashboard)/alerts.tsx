@@ -33,32 +33,46 @@ const FILTERS = ['All', 'SOS', 'Gas', 'Temperature', 'Unresolved'];
 
 function WarningBanner({ alerts }: { alerts: AlertType[] }) {
   const [dismissed, setDismissed] = useState(false);
+  const dangerTypes = ['GAS_CRITICAL', 'CH4_CRITICAL', 'CO_CRITICAL', 'H2S_CRITICAL'];
 
   const warningAlerts = alerts.filter(
-    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE', 'CH4_CRITICAL', 'CO_CRITICAL'].includes(a.type)
+    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE', ...dangerTypes].includes(a.type)
   );
+  const hasDanger = warningAlerts.some((a) => dangerTypes.includes(a.type));
 
   if (warningAlerts.length === 0 || dismissed) return null;
 
   return (
-    <View style={bannerStyles.container}>
+    <View style={[bannerStyles.container, hasDanger && bannerStyles.containerDanger]}>
       {warningAlerts.map((alert, index) => (
-        <View key={alert.id} style={[bannerStyles.row, index < warningAlerts.length - 1 && bannerStyles.rowBorder]}>
-          <View style={bannerStyles.dot} />
+        <View
+          key={alert.id}
+          style={[
+            bannerStyles.row,
+            hasDanger && bannerStyles.rowDanger,
+            index < warningAlerts.length - 1 && bannerStyles.rowBorder,
+            index < warningAlerts.length - 1 && hasDanger && bannerStyles.rowBorderDanger,
+          ]}
+        >
+          <View style={[bannerStyles.dot, hasDanger && bannerStyles.dotDanger]} />
           <MaterialCommunityIcons
             name={alert.type === 'TEMPERATURE' ? 'thermometer-alert' : 'gas-cylinder'}
             size={16}
-            color="#BA7517"
+            color={hasDanger ? '#FECACA' : '#BA7517'}
           />
-          <Text style={bannerStyles.text} numberOfLines={1}>
-            {alert.type === 'GAS_HIGH' || alert.type === 'CH4_CRITICAL' || alert.type === 'CO_CRITICAL' ? 'High gas levels' : 'Temperature warning'} — {alert.zone}, {alert.workerName}
+          <Text style={[bannerStyles.text, hasDanger && bannerStyles.textDanger]} numberOfLines={1}>
+            {dangerTypes.includes(alert.type)
+              ? 'Danger gas levels'
+              : alert.type === 'GAS_HIGH'
+                ? 'High gas levels'
+                : 'Temperature warning'} — {alert.zone}, {alert.workerName}
           </Text>
-          <View style={bannerStyles.label}>
-            <Text style={bannerStyles.labelText}>{alert.type.replace('_', ' ')}</Text>
+          <View style={[bannerStyles.label, hasDanger && bannerStyles.labelDanger]}>
+            <Text style={[bannerStyles.labelText, hasDanger && bannerStyles.labelTextDanger]}>{alert.type.replace('_', ' ')}</Text>
           </View>
           {index === warningAlerts.length - 1 && (
             <TouchableOpacity onPress={() => setDismissed(true)} style={bannerStyles.close}>
-              <Text style={bannerStyles.closeText}>✕</Text>
+              <Text style={[bannerStyles.closeText, hasDanger && bannerStyles.closeTextDanger]}>✕</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -276,6 +290,10 @@ const bannerStyles = StyleSheet.create({
     borderBottomWidth: 1.5,
     borderBottomColor: '#EF9F27',
   },
+  containerDanger: {
+    backgroundColor: '#7F1D1D',
+    borderBottomColor: '#DC2626',
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -283,9 +301,15 @@ const bannerStyles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
+  rowDanger: {
+    backgroundColor: '#991B1B',
+  },
   rowBorder: {
     borderBottomWidth: 0.5,
     borderBottomColor: '#FAC775',
+  },
+  rowBorderDanger: {
+    borderBottomColor: '#DC2626',
   },
   dot: {
     width: 8,
@@ -294,11 +318,17 @@ const bannerStyles = StyleSheet.create({
     backgroundColor: '#BA7517',
     flexShrink: 0,
   },
+  dotDanger: {
+    backgroundColor: '#FCA5A5',
+  },
   text: {
     flex: 1,
     fontSize: 13,
     fontFamily: 'Poppins_500Medium',
     color: '#633806',
+  },
+  textDanger: {
+    color: '#FEE2E2',
   },
   label: {
     backgroundColor: '#FAC775',
@@ -307,10 +337,16 @@ const bannerStyles = StyleSheet.create({
     paddingVertical: 2,
     flexShrink: 0,
   },
+  labelDanger: {
+    backgroundColor: '#B91C1C',
+  },
   labelText: {
     fontSize: 11,
     fontFamily: 'Poppins_600SemiBold',
     color: '#854F0B',
+  },
+  labelTextDanger: {
+    color: '#FEE2E2',
   },
   close: {
     paddingHorizontal: 4,
@@ -320,6 +356,9 @@ const bannerStyles = StyleSheet.create({
     fontSize: 16,
     color: '#854F0B',
     lineHeight: 20,
+  },
+  closeTextDanger: {
+    color: '#FEE2E2',
   },
 });
 

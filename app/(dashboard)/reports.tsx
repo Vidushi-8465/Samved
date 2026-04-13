@@ -76,6 +76,20 @@ type GasReading = {
   timestamp: any;
 };
 
+type PreMonitorReading = {
+  result?: string | null;
+  level1_ch4?: number | string | null;
+  level1_co?: number | string | null;
+  level2_ch4?: number | string | null;
+  level2_co?: number | string | null;
+  level3_ch4?: number | string | null;
+  level3_co?: number | string | null;
+  level1_water?: number | string | null;
+  level2_water?: number | string | null;
+  level3_water?: number | string | null;
+  rssi?: number | string | null;
+};
+
 type VitalReading = {
   workerId: string;
   workerName: string;
@@ -193,6 +207,40 @@ function fmtVal(val: number | null | undefined, unit: string): string {
 
 function fmtCm(val: number | null | undefined): string {
   return val == null || isNaN(val as number) ? 'N/A' : `${(val as number).toFixed(1)} cm`;
+}
+
+function toNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const num = typeof value === 'number' ? value : Number(value);
+  return Number.isNaN(num) ? null : num;
+}
+
+function getPreMonitorDisplayStatus(raw: PreMonitorReading | null | undefined): 'safe' | 'warning' | 'danger' | 'offline' {
+  if (!raw) return 'offline';
+  const result = String(raw.result ?? '').trim().toUpperCase();
+  if (result === 'SAFE') return 'safe';
+  if (result === 'WARNING') return 'warning';
+  if (result === 'UNSAFE') return 'danger';
+  return 'offline';
+}
+
+function getPreMonitorLevelValue(raw: PreMonitorReading | null | undefined, keys: Array<keyof PreMonitorReading>): number | null {
+  if (!raw) return null;
+  for (const key of keys) {
+    const value = toNumber(raw[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function getPreMonitorRowStatus(ch4: number | null, co: number | null, water: number | null): 'safe' | 'warning' | 'danger' {
+  const ch4Status = ch4 != null && ch4 >= 5000 ? 'danger' : ch4 != null && ch4 >= 1000 ? 'warning' : 'safe';
+  const coStatus = co != null && co >= 200 ? 'danger' : co != null && co >= 25 ? 'warning' : 'safe';
+  const waterStatus = water != null && water <= 50 ? 'danger' : water != null && water <= 120 ? 'warning' : 'safe';
+
+  if ([ch4Status, coStatus, waterStatus].includes('danger')) return 'danger';
+  if ([ch4Status, coStatus, waterStatus].includes('warning')) return 'warning';
+  return 'safe';
 }
 
 /** Returns 'safe' | 'caution' | 'danger' for a gas value */
@@ -812,10 +860,11 @@ function GasLevelCard({ gasKey, readings }: {
 
 // ─── Live Worker Card ──────────────────────────────────────────────────────────
 
-function LiveWorkerCard({ worker, sensor, preMonitoringStatus }: {
+function LiveWorkerCard({ worker, sensor, preMonitoringStatus, avgWaterLevel }: {
   worker: WorkerProfile;
   sensor?: SensorData | null;
   preMonitoringStatus?: 'safe' | 'warning' | 'danger' | 'offline';
+  avgWaterLevel?: number | null;
 }) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const overall = status?.overall ?? 'offline';
@@ -846,7 +895,14 @@ function LiveWorkerCard({ worker, sensor, preMonitoringStatus }: {
     { label: 'SpO₂', value: sensor?.spO2       ? `${sensor.spO2}%`         : '—', icon: 'lungs',         lvl: sensor?.spO2 ? (sensor.spO2 < 90 ? 'danger' : sensor.spO2 < 95 ? 'caution' : 'safe') : 'na' },
     { label: 'CH₄',  value: sensor?.ch4        ? `${sensor.ch4} ppm`       : '—', icon: 'fire',          lvl: gasLevel('ch4', sensor?.ch4 ?? null) },
     { label: 'CO',   value: (sensor as any)?.co ? `${(sensor as any).co} ppm` : '—', icon: 'cloud-outline', lvl: gasLevel('co', (sensor as any)?.co ?? null) },
-    { label: 'Water',value: fmtCm(sensor?.waterLevel),                              icon: 'water',         lvl: sensor?.waterLevel != null ? (sensor.waterLevel > 120 ? 'danger' : sensor.waterLevel > 50 ? 'caution' : 'safe') : 'na' },
+    {
+      label: 'Water Avg',
+      value: fmtCm(avgWaterLevel ?? sensor?.waterLevel),
+      icon: 'water',
+      lvl: (avgWaterLevel ?? sensor?.waterLevel) != null
+        ? ((avgWaterLevel ?? sensor?.waterLevel)! > 120 ? 'danger' : (avgWaterLevel ?? sensor?.waterLevel)! > 50 ? 'caution' : 'safe')
+        : 'na',
+    },
   ] as const;
 
   return (
@@ -890,6 +946,84 @@ function LiveWorkerCard({ worker, sensor, preMonitoringStatus }: {
           📍 {sensor.manholeId ?? '—'} · {sensor.locationLabel ?? '—'}
           {'  '}RSSI: {sensor.rssi != null ? `${sensor.rssi} dBm` : '—'}
         </Text>
+      )}
+    </View>
+  );
+}
+
+function PreMonitoringWorkerCard({ worker, preMonitor }: {
+  worker: WorkerProfile;
+  preMonitor?: PreMonitorReading | null;
+}) {
+  const verdict = getPreMonitorDisplayStatus(preMonitor);
+  const statusColor = verdict === 'danger' ? Colors.danger : verdict === 'warning' ? Colors.warning : verdict === 'safe' ? Colors.success : Colors.textMuted;
+  const statusBg = verdict === 'danger' ? Colors.dangerBg : verdict === 'warning' ? Colors.warningBg : verdict === 'safe' ? Colors.successBg : Colors.background;
+
+  const levels = [
+    {
+      label: 'Level 1',
+      ch4: getPreMonitorLevelValue(preMonitor, ['level1_ch4']),
+      co: getPreMonitorLevelValue(preMonitor, ['level1_co']),
+      water: getPreMonitorLevelValue(preMonitor, ['level1_water']),
+    },
+    {
+      label: 'Level 2',
+      ch4: getPreMonitorLevelValue(preMonitor, ['level2_ch4']),
+      co: getPreMonitorLevelValue(preMonitor, ['level2_co']),
+      water: getPreMonitorLevelValue(preMonitor, ['level2_water']),
+    },
+    {
+      label: 'Level 3',
+      ch4: getPreMonitorLevelValue(preMonitor, ['level3_ch4']),
+      co: getPreMonitorLevelValue(preMonitor, ['level3_co']),
+      water: getPreMonitorLevelValue(preMonitor, ['level3_water']),
+    },
+  ];
+
+  return (
+    <View style={[styles.preMonitorCard, { borderWidth: 1.5, borderColor: statusColor }]}>
+      <View style={styles.preMonitorHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.preMonitorName}>{worker.name}</Text>
+          <Text style={styles.preMonitorMeta}>{worker.employeeId} · {worker.zone}</Text>
+        </View>
+        <View style={[styles.preMonitorBadge, { backgroundColor: statusBg }]}>
+          <Text style={[styles.preMonitorBadgeText, { color: statusColor }]}>
+            {verdict === 'safe' ? 'SAFE' : verdict === 'warning' ? 'WARNING' : verdict === 'danger' ? 'UNSAFE' : 'NO DATA'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.preMonitorRows}>
+        {levels.map((level) => {
+          const ch4Status = level.ch4 != null && level.ch4 >= 5000 ? 'danger' : level.ch4 != null && level.ch4 >= 1000 ? 'warning' : 'safe';
+          const coStatus = level.co != null && level.co >= 200 ? 'danger' : level.co != null && level.co >= 25 ? 'warning' : 'safe';
+          const waterStatus = level.water != null && level.water <= 50 ? 'danger' : level.water != null && level.water <= 120 ? 'warning' : 'safe';
+          const ch4Color = ch4Status === 'danger' ? Colors.danger : ch4Status === 'warning' ? Colors.warning : Colors.success;
+          const coColor = coStatus === 'danger' ? Colors.danger : coStatus === 'warning' ? Colors.warning : Colors.success;
+          const waterColor = waterStatus === 'danger' ? Colors.danger : waterStatus === 'warning' ? Colors.warning : Colors.success;
+          return (
+            <View key={level.label} style={styles.preMonitorRow}>
+              <Text style={styles.preMonitorRowLabel}>{level.label}</Text>
+              <View style={[styles.preMonitorCell, { borderColor: ch4Color }]}>
+                <Text style={[styles.preMonitorCellValue, { color: ch4Color }]}>{level.ch4 != null ? level.ch4 : '—'}</Text>
+                <Text style={styles.preMonitorCellUnit}>CH₄</Text>
+              </View>
+              <View style={[styles.preMonitorCell, { borderColor: coColor }]}>
+                <Text style={[styles.preMonitorCellValue, { color: coColor }]}>{level.co != null ? level.co : '—'}</Text>
+                <Text style={styles.preMonitorCellUnit}>CO</Text>
+              </View>
+              <View style={[styles.preMonitorCell, { borderColor: waterColor }]}>
+                <Text style={[styles.preMonitorCellValue, { color: waterColor }]}>{level.water != null ? level.water : '—'}</Text>
+                <Text style={styles.preMonitorCellUnit}>Water</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+
+      {preMonitor?.rssi != null && (
+        <Text style={styles.preMonitorSignal}>LoRa Signal: {toNumber(preMonitor.rssi)} dBm</Text>
       )}
     </View>
   );
@@ -1269,7 +1403,9 @@ export default function ReportsScreen() {
   const [liveWorkers, setLiveWorkers] = useState<WorkerProfile[]>([]);
   const [liveSensors, setLiveSensors] = useState<Record<string, SensorData>>({});
   const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([]);
+  const [preMonitorByWorker, setPreMonitorByWorker] = useState<Record<string, PreMonitorReading | null>>({});
   const [preMonitorWaterByWorker, setPreMonitorWaterByWorker] = useState<Record<string, number | null>>({});
+  const [preMonitorStatusByWorker, setPreMonitorStatusByWorker] = useState<Record<string, 'safe' | 'warning' | 'danger' | 'offline'>>({});
 
   // ── FIX: sensor subscription re-runs whenever liveWorkers list changes ──
   // Previously sensorUnsub was only set up inside the workers callback closure,
@@ -1306,7 +1442,9 @@ export default function ReportsScreen() {
 
   useEffect(() => {
     if (!effectiveWorkers.length) {
+      setPreMonitorByWorker({});
       setPreMonitorWaterByWorker({});
+      setPreMonitorStatusByWorker({});
       return;
     }
 
@@ -1318,11 +1456,60 @@ export default function ReportsScreen() {
       return values.length ? avg(values) : null;
     };
 
+    const parsePreMonitorStatus = (raw: any): 'safe' | 'warning' | 'danger' | 'offline' => {
+      if (!raw) return 'offline';
+
+      const result = String(raw.result ?? raw.RES ?? raw.res ?? '').trim().toUpperCase();
+      if (result === 'SAFE') return 'safe';
+      if (result === 'WARNING') return 'warning';
+      if (result === 'UNSAFE') return 'danger';
+
+      const values = [
+        Number(raw.level1_ch4), Number(raw.level2_ch4), Number(raw.level3_ch4),
+        Number(raw.level1_co), Number(raw.level2_co), Number(raw.level3_co),
+      ].filter((v) => !Number.isNaN(v) && v > 0);
+
+      if (values.length === 0) return 'offline';
+
+      const ch4Vals = [Number(raw.level1_ch4), Number(raw.level2_ch4), Number(raw.level3_ch4)]
+        .filter((v) => !Number.isNaN(v) && v > 0);
+      const coVals = [Number(raw.level1_co), Number(raw.level2_co), Number(raw.level3_co)]
+        .filter((v) => !Number.isNaN(v) && v > 0);
+      const waterVals = [Number(raw.level1_water), Number(raw.level2_water), Number(raw.level3_water)]
+        .filter((v) => !Number.isNaN(v) && v > 0);
+
+      const avgCh4 = avg(ch4Vals);
+      const avgCo = avg(coVals);
+      const avgWater = avg(waterVals);
+
+      const hasDanger =
+        (avgCh4 != null && avgCh4 >= 5000) ||
+        (avgCo != null && avgCo >= 200) ||
+        (avgWater != null && avgWater <= 50);
+      if (hasDanger) return 'danger';
+
+      const hasWarning =
+        (avgCh4 != null && avgCh4 >= 1000) ||
+        (avgCo != null && avgCo >= 25) ||
+        (avgWater != null && avgWater <= 120);
+      if (hasWarning) return 'warning';
+
+      return 'safe';
+    };
+
     const unsubs = effectiveWorkers.map((worker) =>
       listenToPreMonitor((worker as any).id, (data) => {
+        setPreMonitorByWorker((prev) => ({
+          ...prev,
+          [(worker as any).id]: data ?? null,
+        }));
         setPreMonitorWaterByWorker((prev) => ({
           ...prev,
           [(worker as any).id]: parsePreMonitorWaterAvg(data),
+        }));
+        setPreMonitorStatusByWorker((prev) => ({
+          ...prev,
+          [(worker as any).id]: parsePreMonitorStatus(data),
         }));
       })
     );
@@ -1813,6 +2000,21 @@ export default function ReportsScreen() {
         {activeTab === 'workers' && (
           <>
             <View style={styles.section}>
+              <Text style={styles.sectionTitle}>🧪 Pre-Monitoring</Text>
+              <Text style={styles.sectionSub}>Same pre-entry values shown on the Overview page</Text>
+              {liveWorkerRows.length === 0
+                ? <Text style={styles.emptyText}>No workers assigned. Add workers to see pre-monitoring data here.</Text>
+                : liveWorkerRows.map(({ worker }) => (
+                    <PreMonitoringWorkerCard
+                      key={`pre-${(worker as any).id}`}
+                      worker={worker}
+                      preMonitor={preMonitorByWorker[(worker as any).id] ?? null}
+                    />
+                  ))
+              }
+            </View>
+
+            <View style={styles.section}>
               <Text style={styles.sectionTitle}>👷 Live Worker Values</Text>
               <Text style={styles.sectionSub}>
                 {effectiveWorkers.length} worker{effectiveWorkers.length !== 1 ? 's' : ''} · Real-time sensor snapshot
@@ -1820,13 +2022,15 @@ export default function ReportsScreen() {
               {liveWorkerRows.length === 0
                 ? <Text style={styles.emptyText}>No workers assigned. Add workers to see live data here.</Text>
                 : liveWorkerRows.map(({ worker, sensor }) => {
-                    const preStatus = getPreMonitoringStatus((worker as any).id, gasReadings);
+                    const preStatus = preMonitorStatusByWorker[(worker as any).id] ?? getPreMonitoringStatus((worker as any).id, gasReadings);
+                    const avgWaterLevel = getAvgWaterLevelByWorker((worker as any).id, gasReadings);
                     return (
                       <LiveWorkerCard
                         key={(worker as any).id}
                         worker={worker}
                         sensor={sensor}
                         preMonitoringStatus={preStatus}
+                        avgWaterLevel={avgWaterLevel}
                       />
                     );
                   })
@@ -2110,6 +2314,19 @@ const styles = StyleSheet.create({
   liveWorkerFooter:{ marginTop: 10, fontSize: 11, color: '#94A3B8' },
   preMonitoringTag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, marginTop: 4 },
   preMonitoringTagText: { fontSize: 9, fontWeight: '700' },
+  preMonitorCard: { backgroundColor: '#F8FAFC', borderRadius: BorderRadius.lg, padding: 14, marginTop: 10 },
+  preMonitorHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  preMonitorName: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  preMonitorMeta: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  preMonitorBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  preMonitorBadgeText: { fontSize: 10, fontWeight: '800' },
+  preMonitorRows: { marginTop: 10, gap: 8 },
+  preMonitorRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  preMonitorRowLabel: { width: 56, fontSize: 10, fontWeight: '700', color: '#475569' },
+  preMonitorCell: { flex: 1, minWidth: 0, borderWidth: 1, borderRadius: BorderRadius.md, paddingVertical: 6, paddingHorizontal: 8, backgroundColor: '#fff', alignItems: 'center' },
+  preMonitorCellValue: { fontSize: 13, fontWeight: '800' },
+  preMonitorCellUnit: { fontSize: 9, color: '#94A3B8', marginTop: 1, fontWeight: '600' },
+  preMonitorSignal: { marginTop: 10, fontSize: 10, color: '#94A3B8', fontWeight: '500' },
 
   // Gauges
   gaugeRow:       { gap: 12, paddingVertical: 8 },
