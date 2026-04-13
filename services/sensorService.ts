@@ -212,7 +212,7 @@ export const listenToWorkerSensor = (
       const sensor: SensorData = {
         workerId,
         ch4: raw.mq4_ppm ?? 0,
-        h2s: raw.mq7_ppm ?? 0,
+        h2s: 0,
         co: raw.mq7_ppm ?? 0,
         gasAlert: raw.gas_alert ?? 0,
         gasWarming: raw.gasWarming ?? false,
@@ -260,7 +260,7 @@ export const listenToAllSensors = (
             workerId: id,
             ch4: raw.mq4_ppm ?? 0,           // CH4 from MQ4
             h2s: raw.mq7_ppm ?? 0,           // H2S from MQ7
-            co: raw.mq7_ppm ?? 0,
+            co: 0,
             gasAlert: raw.gas_alert ?? 0,
             gasWarming: raw.gasWarming ?? false,
             waterLevel: raw.water_level ?? 0,

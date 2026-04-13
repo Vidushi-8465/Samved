@@ -1,5 +1,5 @@
 // app/(dashboard)/alerts.tsx
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -13,6 +13,7 @@ const ALERT_ICONS: Record<string, string> = {
   SOS: 'alarm-light',
   GAS_HIGH: 'gas-cylinder',
   GAS_CRITICAL: 'gas-cylinder',
+  CO_CRITICAL: 'gas-cylinder',
   TEMPERATURE: 'thermometer-alert',
   INACTIVITY: 'timer-off',
   HEARTRATE: 'heart-broken',
@@ -21,6 +22,7 @@ const ALERT_ICONS: Record<string, string> = {
 const ALERT_COLORS: Record<string, string> = {
   SOS: Colors.danger,
   GAS_CRITICAL: Colors.danger,
+  CO_CRITICAL: Colors.danger,
   GAS_HIGH: Colors.warning,
   TEMPERATURE: Colors.warning,
   INACTIVITY: Colors.info,
@@ -33,7 +35,7 @@ function WarningBanner({ alerts }: { alerts: AlertType[] }) {
   const [dismissed, setDismissed] = useState(false);
 
   const warningAlerts = alerts.filter(
-    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE'].includes(a.type)
+    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE', 'CH4_CRITICAL', 'CO_CRITICAL'].includes(a.type)
   );
 
   if (warningAlerts.length === 0 || dismissed) return null;
@@ -49,7 +51,7 @@ function WarningBanner({ alerts }: { alerts: AlertType[] }) {
             color="#BA7517"
           />
           <Text style={bannerStyles.text} numberOfLines={1}>
-            {alert.type === 'GAS_HIGH' ? 'High gas levels' : 'Temperature warning'} — {alert.zone}, {alert.workerName}
+            {alert.type === 'GAS_HIGH' || alert.type === 'CH4_CRITICAL' || alert.type === 'CO_CRITICAL' ? 'High gas levels' : 'Temperature warning'} — {alert.zone}, {alert.workerName}
           </Text>
           <View style={bannerStyles.label}>
             <Text style={bannerStyles.labelText}>{alert.type.replace('_', ' ')}</Text>
@@ -66,15 +68,14 @@ function WarningBanner({ alerts }: { alerts: AlertType[] }) {
 }
 
 export default function AlertsScreen() {
-  const { language, alerts, manager, setAlerts } = useStore();
+  const { language, alerts, manager } = useStore();
   const T = getText(language);
   const [activeFilter, setActiveFilter] = useState('All');
-  const seenAlertIds = useRef<Set<string>>(new Set());
 
   const filtered = alerts.filter(a => {
     if (activeFilter === 'All') return true;
     if (activeFilter === 'SOS') return a.type === 'SOS';
-    if (activeFilter === 'Gas') return a.type.includes('GAS');
+    if (activeFilter === 'Gas') return a.type.includes('GAS') || a.type.includes('CH4') || a.type.includes('CO');
     if (activeFilter === 'Temperature') return a.type === 'TEMPERATURE';
     if (activeFilter === 'Unresolved') return !a.resolved;
     return true;
@@ -101,8 +102,9 @@ export default function AlertsScreen() {
   };
 
   const handleAcknowledge = (alert: AlertType) => {
+    const alertLabel = T.alert[alert.type as keyof typeof T.alert] || alert.type.replace(/_/g, ' ');
     if (Platform.OS === 'web') {
-      const confirmed = window.confirm(`Acknowledge that you are responding to this ${T.alert[alert.type]}?`);
+      const confirmed = window.confirm(`Acknowledge that you are responding to this ${alertLabel}?`);
       if (confirmed) {
         void doAcknowledge(alert);
       }
@@ -111,7 +113,7 @@ export default function AlertsScreen() {
 
     Alert.alert(
       'Acknowledge Alert',
-      `Acknowledge that you are responding to this ${T.alert[alert.type]}?`,
+      `Acknowledge that you are responding to this ${alertLabel}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -126,8 +128,9 @@ export default function AlertsScreen() {
   };
 
   const handleResolve = (alert: AlertType) => {
+    const alertLabel = T.alert[alert.type as keyof typeof T.alert] || alert.type.replace(/_/g, ' ');
     if (Platform.OS === 'web') {
-      const confirmed = window.confirm(`Mark this ${T.alert[alert.type]} alert as resolved?`);
+      const confirmed = window.confirm(`Mark this ${alertLabel} alert as resolved?`);
       if (confirmed) {
         void doResolve(alert);
       }
@@ -136,7 +139,7 @@ export default function AlertsScreen() {
 
     Alert.alert(
       'Resolve Alert',
-      `Mark this ${T.alert[alert.type]} alert as resolved?`,
+      `Mark this ${alertLabel} alert as resolved?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -210,6 +213,7 @@ export default function AlertsScreen() {
         renderItem={({ item }) => {
           const color = ALERT_COLORS[item.type] || Colors.warning;
           const icon = ALERT_ICONS[item.type] || 'alert';
+          const alertLabel = T.alert[item.type as keyof typeof T.alert] || item.type.replace(/_/g, ' ');
           return (
             <View style={[styles.alertCard, item.resolved && styles.alertCardResolved, { borderLeftColor: color }]}>
               <View style={[styles.alertIconBox, { backgroundColor: color + '18' }]}>
@@ -218,7 +222,7 @@ export default function AlertsScreen() {
               <View style={styles.alertBody}>
                 <View style={styles.alertTop}>
                   <Text style={[styles.alertType, item.resolved && styles.alertTextMuted]}>
-                    {T.alert[item.type]}
+                    {alertLabel}
                   </Text>
                   <Text style={[styles.alertTime, { color: item.resolved ? Colors.textMuted : color }]}>
                     {formatTime(item.timestamp)}

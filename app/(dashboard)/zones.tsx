@@ -665,8 +665,6 @@ function WeatherAnalysisPanel({ weather, loading, error, onRefresh }: WeatherPan
             : <MaterialCommunityIcons name="refresh" size={18} color={Colors.primary} />}
         </TouchableOpacity>
       </View>
-
-     
       <Text style={wx.sub}>Solapur, Maharashtra · Live via Open-Meteo</Text>
 
       {/* Loading state */}
