@@ -3,7 +3,7 @@ import { ref, onValue } from 'firebase/database';
 import { Timestamp } from 'firebase/firestore';
 import { rtdb } from '@/services/firebase';
 import { ManagerProfile } from '@/services/authService';
-import { SensorData, WorkerProfile, Alert } from '@/services/sensorService';
+import { SensorData, WorkerProfile, Alert, SENSOR_THRESHOLDS } from '@/services/sensorService';
 import * as Notifications from 'expo-notifications';
 import { AppState as RNAppState } from 'react-native';
 import { playAlertSound } from '@/utils/alertSound';
@@ -160,7 +160,7 @@ export const useStore = create<AppState>((set, get) => ({
           locationLabel: s.location_label,
           gasWarming: s.gasWarming,
           workerId: id,
-          gasAlert: s.gasAlert || false,
+          gasAlert: Number(s.gasAlert ?? 0),
           fingerOn: s.fingerOn || false,
           motionAlert: s.motionAlert || false,
           fallAlert: s.fallAlert || false,
@@ -177,9 +177,22 @@ export const useStore = create<AppState>((set, get) => ({
         mapped[id] = sensor;
 
         // 🔥 GENERATE ALERTS FROM SENSOR
-        if (sensor.gasAlert) {
+        const gasAlertLevel = Number(sensor.gasAlert ?? 0);
+        if (gasAlertLevel === 1) {
           generatedAlerts.push({
-            id: `${id}-gas-${Date.now()}`,
+            id: `${id}-ch4-high-${Date.now()}`,
+            workerId: id,
+            type: 'CH4_HIGH',
+            workerName: id,
+            zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
+            value: `${sensor.ch4} ppm`,
+            resolved: false,
+            timestamp: Timestamp.now(),
+          } as Alert);
+        } else if (gasAlertLevel === 2) {
+          generatedAlerts.push({
+            id: `${id}-ch4-critical-${Date.now()}`,
             workerId: id,
             type: 'CH4_CRITICAL',
             workerName: id,
@@ -189,6 +202,101 @@ export const useStore = create<AppState>((set, get) => ({
             resolved: false,
             timestamp: Timestamp.now(),
           } as Alert);
+        } else if (gasAlertLevel === 3) {
+          generatedAlerts.push({
+            id: `${id}-h2s-high-${Date.now()}`,
+            workerId: id,
+            type: 'H2S_HIGH',
+            workerName: id,
+            zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
+            value: `${sensor.h2s} ppm`,
+            resolved: false,
+            timestamp: Timestamp.now(),
+          } as Alert);
+        } else if (gasAlertLevel === 4) {
+          generatedAlerts.push({
+            id: `${id}-h2s-critical-${Date.now()}`,
+            workerId: id,
+            type: 'H2S_CRITICAL',
+            workerName: id,
+            zone: sensor.locationLabel || 'Unknown',
+            manholeId: sensor.manholeId || '—',
+            value: `${sensor.h2s} ppm`,
+            resolved: false,
+            timestamp: Timestamp.now(),
+          } as Alert);
+        } else if (gasAlertLevel === 5) {
+          generatedAlerts.push(
+            {
+              id: `${id}-ch4-critical-${Date.now()}`,
+              workerId: id,
+              type: 'CH4_CRITICAL',
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: `${sensor.ch4} ppm`,
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert,
+            {
+              id: `${id}-h2s-critical-${Date.now() + 1}`,
+              workerId: id,
+              type: 'H2S_CRITICAL',
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: `${sensor.h2s} ppm`,
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert
+          );
+        }
+
+        const heartRate = Number(sensor.heartRate ?? 0);
+        if (heartRate > 0) {
+          const heartRateType =
+            heartRate < SENSOR_THRESHOLDS.heartRate.dangerLow || heartRate > SENSOR_THRESHOLDS.heartRate.dangerHigh
+              ? 'HEARTRATE'
+              : null;
+
+          if (heartRateType) {
+            generatedAlerts.push({
+              id: `${id}-hr-${Date.now()}`,
+              workerId: id,
+              type: heartRateType,
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: `${heartRate} BPM`,
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert);
+          }
+        }
+
+        const spO2 = Number(sensor.spO2 ?? 0);
+        if (spO2 > 0) {
+          const spO2Type =
+            spO2 < SENSOR_THRESHOLDS.spO2.dangerMin
+              ? 'SPO2_CRITICAL'
+              : spO2 < SENSOR_THRESHOLDS.spO2.warningMin
+                ? 'SPO2_LOW'
+                : null;
+
+          if (spO2Type) {
+            generatedAlerts.push({
+              id: `${id}-spo2-${Date.now()}`,
+              workerId: id,
+              type: spO2Type,
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: `${spO2}%`,
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert);
+          }
         }
 
         const posture = (sensor.workerPosture ?? '').toLowerCase();

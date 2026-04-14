@@ -1,42 +1,60 @@
 // app/(dashboard)/alerts.tsx
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { useStore } from '@/store/useStore';
 import { getText } from '@/constants/translations';
-import { resolveAlert, acknowledgeAlert, Alert as AlertType } from '@/services/sensorService';
+import { resolveAlert, acknowledgeAlert, Alert as AlertType, SENSOR_THRESHOLDS } from '@/services/sensorService';
 import { stopAlertSound } from '@/utils/alertSound';
+import { triggerBuzzer } from '@/services/buzzerService';
 
 const ALERT_ICONS: Record<string, string> = {
   SOS: 'alarm-light',
   GAS_HIGH: 'gas-cylinder',
   GAS_CRITICAL: 'gas-cylinder',
+  CH4_HIGH: 'gas-cylinder',
+  CH4_CRITICAL: 'gas-cylinder',
+  H2S_HIGH: 'gas-cylinder',
+  H2S_CRITICAL: 'gas-cylinder',
   CO_CRITICAL: 'gas-cylinder',
   TEMPERATURE: 'thermometer-alert',
   INACTIVITY: 'timer-off',
   HEARTRATE: 'heart-broken',
+  SPO2_LOW: 'water-percent-alert',
+  SPO2_CRITICAL: 'water-alert',
 };
 
 const ALERT_COLORS: Record<string, string> = {
   SOS: Colors.danger,
   GAS_CRITICAL: Colors.danger,
+  CH4_CRITICAL: Colors.danger,
+  H2S_CRITICAL: Colors.danger,
   CO_CRITICAL: Colors.danger,
   GAS_HIGH: Colors.warning,
+  CH4_HIGH: Colors.warning,
+  H2S_HIGH: Colors.warning,
   TEMPERATURE: Colors.warning,
   INACTIVITY: Colors.info,
   HEARTRATE: Colors.danger,
+  SPO2_LOW: Colors.warning,
+  SPO2_CRITICAL: Colors.danger,
 };
 
 const FILTERS = ['All', 'SOS', 'Gas', 'Temperature', 'Unresolved'];
 
-function WarningBanner({ alerts }: { alerts: AlertType[] }) {
+function WarningBanner({ alerts, resetKey }: { alerts: AlertType[]; resetKey: number }) {
   const [dismissed, setDismissed] = useState(false);
-  const dangerTypes = ['GAS_CRITICAL', 'CH4_CRITICAL', 'CO_CRITICAL', 'H2S_CRITICAL'];
+  const dangerTypes = ['GAS_CRITICAL', 'CH4_CRITICAL', 'CO_CRITICAL', 'H2S_CRITICAL', 'HEARTRATE', 'SPO2_CRITICAL'];
+  const warningTypes = ['GAS_HIGH', 'CH4_HIGH', 'H2S_HIGH', 'TEMPERATURE', 'SPO2_LOW'];
+
+  useEffect(() => {
+    setDismissed(false);
+  }, [resetKey]);
 
   const warningAlerts = alerts.filter(
-    (a) => !a.resolved && ['GAS_HIGH', 'TEMPERATURE', ...dangerTypes].includes(a.type)
+    (a) => !a.resolved && [...warningTypes, ...dangerTypes].includes(a.type)
   );
   const hasDanger = warningAlerts.some((a) => dangerTypes.includes(a.type));
 
@@ -56,19 +74,33 @@ function WarningBanner({ alerts }: { alerts: AlertType[] }) {
         >
           <View style={[bannerStyles.dot, hasDanger && bannerStyles.dotDanger]} />
           <MaterialCommunityIcons
-            name={alert.type === 'TEMPERATURE' ? 'thermometer-alert' : 'gas-cylinder'}
+            name={
+              alert.type === 'TEMPERATURE'
+                ? 'thermometer-alert'
+                : alert.type === 'HEARTRATE'
+                  ? 'heart-broken'
+                  : alert.type === 'SPO2_LOW' || alert.type === 'SPO2_CRITICAL'
+                    ? 'water-percent-alert'
+                    : 'gas-cylinder'
+            }
             size={16}
             color={hasDanger ? '#FECACA' : '#BA7517'}
           />
           <Text style={[bannerStyles.text, hasDanger && bannerStyles.textDanger]} numberOfLines={1}>
             {dangerTypes.includes(alert.type)
-              ? 'Danger gas levels'
-              : alert.type === 'GAS_HIGH'
+              ? alert.type === 'HEARTRATE'
+                ? 'Danger heart rate'
+                : alert.type === 'SPO2_CRITICAL'
+                  ? 'Critical SpO2'
+                  : 'Danger gas levels'
+              : ['GAS_HIGH', 'CH4_HIGH', 'H2S_HIGH'].includes(alert.type)
                 ? 'High gas levels'
+                : alert.type === 'SPO2_LOW'
+                  ? 'Low SpO2'
                 : 'Temperature warning'} — {alert.zone}, {alert.workerName}
           </Text>
           <View style={[bannerStyles.label, hasDanger && bannerStyles.labelDanger]}>
-            <Text style={[bannerStyles.labelText, hasDanger && bannerStyles.labelTextDanger]}>{alert.type.replace('_', ' ')}</Text>
+            <Text style={[bannerStyles.labelText, hasDanger && bannerStyles.labelTextDanger]}>{alert.type.replace(/_/g, ' ')}</Text>
           </View>
           {index === warningAlerts.length - 1 && (
             <TouchableOpacity onPress={() => setDismissed(true)} style={bannerStyles.close}>
@@ -82,9 +114,117 @@ function WarningBanner({ alerts }: { alerts: AlertType[] }) {
 }
 
 export default function AlertsScreen() {
-  const { language, alerts, manager } = useStore();
+  const { language, alerts, manager, sensors, workers } = useStore();
   const T = getText(language);
   const [activeFilter, setActiveFilter] = useState('All');
+  const [simulatedBannerAlerts, setSimulatedBannerAlerts] = useState<AlertType[]>([]);
+  const [bannerResetKey, setBannerResetKey] = useState(0);
+  const [thresholdBannerDismissed, setThresholdBannerDismissed] = useState(false);
+  const [warningWorkerBusy, setWarningWorkerBusy] = useState(false);
+
+  const bannerAlerts = [...simulatedBannerAlerts, ...alerts];
+
+  const thresholdBreaches = useMemo(() => {
+    return Object.entries(sensors)
+      .map(([workerId, sensor]) => {
+        const worker = workers.find((entry) => entry.id === workerId);
+        const workerName = worker?.name || workerId;
+        const zone = sensor.locationLabel || sensor.zone || 'Unknown';
+        const reasons: string[] = [];
+
+        const ch4 = Number(sensor.ch4 ?? 0);
+        if (ch4 >= SENSOR_THRESHOLDS.ch4.warningMin) {
+          const level = ch4 >= SENSOR_THRESHOLDS.ch4.dangerMin ? 'danger' : 'warning';
+          reasons.push(`CH4 ${level} (${ch4} ppm)`);
+        }
+
+        const coValue = Number(sensor.co ?? sensor.h2s ?? 0);
+        if (coValue >= SENSOR_THRESHOLDS.co.warningMin) {
+          const level = coValue >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' : 'warning';
+          reasons.push(`CO ${level} (${coValue} ppm)`);
+        }
+
+        const heartRate = Number(sensor.heartRate ?? 0);
+        if (heartRate > 0) {
+          const isHrDanger = heartRate < SENSOR_THRESHOLDS.heartRate.dangerLow || heartRate > SENSOR_THRESHOLDS.heartRate.dangerHigh;
+          const isHrWarning = heartRate < SENSOR_THRESHOLDS.heartRate.warningLow || heartRate > SENSOR_THRESHOLDS.heartRate.warningHigh;
+          if (isHrDanger || isHrWarning) {
+            reasons.push(`HR ${isHrDanger ? 'danger' : 'warning'} (${heartRate} BPM)`);
+          }
+        }
+
+        const spO2 = Number(sensor.spO2 ?? 0);
+        if (spO2 > 0) {
+          const isSpO2Danger = spO2 < SENSOR_THRESHOLDS.spO2.dangerMin;
+          const isSpO2Warning = spO2 < SENSOR_THRESHOLDS.spO2.warningMin;
+          if (isSpO2Danger || isSpO2Warning) {
+            reasons.push(`SpO2 ${isSpO2Danger ? 'danger' : 'warning'} (${spO2})`);
+          }
+        }
+
+        return reasons.length > 0 ? { workerId, workerName, zone, reasons } : null;
+      })
+      .filter((entry): entry is { workerId: string; workerName: string; zone: string; reasons: string[] } => Boolean(entry));
+  }, [sensors, workers]);
+
+  const thresholdSignature = useMemo(
+    () => thresholdBreaches.map((entry) => `${entry.workerId}:${entry.reasons.join(',')}`).join('|'),
+    [thresholdBreaches]
+  );
+
+  useEffect(() => {
+    setThresholdBannerDismissed(false);
+  }, [thresholdSignature]);
+
+  const createSimulatedAlert = (type: AlertType['type'], value: string, workerName: string): AlertType => ({
+    id: `sim-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    workerId: 'simulated-worker',
+    workerName,
+    type,
+    value,
+    zone: 'Simulation Zone',
+    manholeId: 'SIM-01',
+    timestamp: new Date() as any,
+    resolved: false,
+    acknowledged: false,
+    escalationLevel: 'manager',
+  });
+
+  const simulateWarningBanner = () => {
+    setSimulatedBannerAlerts([
+      createSimulatedAlert('CH4_HIGH', '5200 ppm', 'Sim Worker Warning'),
+      createSimulatedAlert('SPO2_LOW', '92', 'Sim Worker Warning'),
+    ]);
+    setBannerResetKey((key) => key + 1);
+  };
+
+  const simulateDangerBanner = () => {
+    setSimulatedBannerAlerts([
+      createSimulatedAlert('CH4_CRITICAL', '11000 ppm', 'Sim Worker Danger'),
+      createSimulatedAlert('HEARTRATE', '128 BPM', 'Sim Worker Danger'),
+    ]);
+    setBannerResetKey((key) => key + 1);
+  };
+
+  const clearBannerSimulation = () => {
+    setSimulatedBannerAlerts([]);
+    setBannerResetKey((key) => key + 1);
+  };
+
+  const handleWarnWorker = async () => {
+    if (thresholdBreaches.length === 0 || warningWorkerBusy) return;
+
+    setWarningWorkerBusy(true);
+    try {
+      const workerIds = Array.from(new Set(thresholdBreaches.map((entry) => entry.workerId)));
+      await Promise.all(workerIds.map((workerId) => triggerBuzzer(workerId, 7000)));
+      Alert.alert('Warn Worker', `Triggered buzzer for 7 seconds on ${workerIds.length} worker device${workerIds.length > 1 ? 's' : ''}.`);
+    } catch (error) {
+      Alert.alert('Warn Worker', 'Could not trigger hardware buzzer. Check receiver/device connection.');
+    } finally {
+      setWarningWorkerBusy(false);
+    }
+  };
 
   const filtered = alerts.filter(a => {
     if (activeFilter === 'All') return true;
@@ -184,8 +324,49 @@ export default function AlertsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <WarningBanner alerts={alerts} />
+      {thresholdBreaches.length > 0 && !thresholdBannerDismissed && (
+        <View style={styles.thresholdBanner}>
+          <View style={styles.thresholdBannerHeader}>
+            <MaterialCommunityIcons name="alert" size={16} color="#7C5D00" />
+            <Text style={styles.thresholdBannerTitle}>Worker Threshold Warning</Text>
+          </View>
+          <Text style={styles.thresholdBannerText} numberOfLines={2}>
+            {thresholdBreaches
+              .slice(0, 2)
+              .map((entry) => `${entry.workerName} (${entry.zone}): ${entry.reasons.join(', ')}`)
+              .join('  •  ')}
+            {thresholdBreaches.length > 2 ? `  •  +${thresholdBreaches.length - 2} more` : ''}
+          </Text>
+          <View style={styles.thresholdBannerActions}>
+            <TouchableOpacity style={[styles.thresholdActionBtn, styles.thresholdOkBtn]} onPress={() => setThresholdBannerDismissed(true)}>
+              <Text style={styles.thresholdActionText}>OK</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.thresholdActionBtn, styles.thresholdWarnBtn, warningWorkerBusy && styles.thresholdWarnBtnDisabled]}
+              onPress={() => void handleWarnWorker()}
+              disabled={warningWorkerBusy}
+            >
+              <Text style={styles.thresholdActionText}>{warningWorkerBusy ? 'Sending...' : 'Warn Worker'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      <WarningBanner alerts={bannerAlerts} resetKey={bannerResetKey} />
       {/* your existing red SOS banner goes here */}
+
+      <View style={styles.simulatorRow}>
+        <Text style={styles.simulatorLabel}>Banner test</Text>
+        <TouchableOpacity style={[styles.simulatorChip, styles.simulatorWarningChip]} onPress={simulateWarningBanner}>
+          <Text style={styles.simulatorChipText}>Simulate Warning</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.simulatorChip, styles.simulatorDangerChip]} onPress={simulateDangerBanner}>
+          <Text style={styles.simulatorChipText}>Simulate Danger</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.simulatorChip, styles.simulatorClearChip]} onPress={clearBannerSimulation}>
+          <Text style={styles.simulatorChipText}>Clear</Text>
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.header}>
         <View>
@@ -311,7 +492,7 @@ const bannerStyles = StyleSheet.create({
   rowBorderDanger: {
     borderBottomColor: '#DC2626',
   },
-  dot: {
+  dot: {  
     width: 8,
     height: 8,
     borderRadius: 4,
@@ -364,6 +545,90 @@ const bannerStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
+  thresholdBanner: {
+    backgroundColor: '#FEF3C7',
+    borderBottomColor: '#F59E0B',
+    borderBottomWidth: 1,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    gap: 6,
+  },
+  thresholdBannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  thresholdBannerTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: '#7C5D00',
+  },
+  thresholdBannerText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: '#7C5D00',
+  },
+  thresholdBannerActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 2,
+  },
+  thresholdActionBtn: {
+    borderRadius: BorderRadius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  thresholdOkBtn: {
+    backgroundColor: '#FCD34D',
+  },
+  thresholdWarnBtn: {
+    backgroundColor: '#F59E0B',
+  },
+  thresholdWarnBtnDisabled: {
+    opacity: 0.6,
+  },
+  thresholdActionText: {
+    color: '#111827',
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
+  },
+  simulatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: '#F8FAFC',
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    flexWrap: 'wrap',
+  },
+  simulatorLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: Colors.textSecondary,
+    marginRight: 2,
+  },
+  simulatorChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+  },
+  simulatorWarningChip: {
+    backgroundColor: '#FDE68A',
+  },
+  simulatorDangerChip: {
+    backgroundColor: '#FCA5A5',
+  },
+  simulatorClearChip: {
+    backgroundColor: '#CBD5E1',
+  },
+  simulatorChipText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#1F2937',
+  },
   header: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md + 2, ...Shadows.md },
   headerTitle: { color: Colors.white, fontSize: 20, fontFamily: 'Poppins_700Bold', letterSpacing: -0.5 },
   headerSub: { color: 'rgba(255, 184, 184, 0.9)', fontSize: 13, fontFamily: 'Poppins_500Medium', marginTop: 2 },

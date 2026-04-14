@@ -94,13 +94,13 @@ export type SafetyStatus = 'safe' | 'warning' | 'danger' | 'offline';
 
 export const SENSOR_THRESHOLDS = {
   ch4: {
-    warningMin: 100,
-    dangerMin: 200,
+    warningMin: 5000,
+    dangerMin: 10000,
     unit: 'ppm',
   },
   co: {
-    warningMin: 50,
-    dangerMin: 200,
+    warningMin: 30,
+    dangerMin: 50,
     unit: 'ppm',
   },
   waterLevel: {
@@ -110,9 +110,9 @@ export const SENSOR_THRESHOLDS = {
   },
   heartRate: {
     warningLow: 60,
-    warningHigh: 120,
+    warningHigh: 100,
     dangerLow: 50,
-    dangerHigh: 130,
+    dangerHigh: 120,
     unit: 'BPM',
   },
   spO2: {

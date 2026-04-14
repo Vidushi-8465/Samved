@@ -23,17 +23,17 @@ interface WorkerSobrietyInfo {
 
 export const THRESHOLDS = {
   sober: {
-    hrLow: 50,
-    hrHigh: 130,
-    spO2Min: 94,
+    hrLow: 60,
+    hrHigh: 100,
+    spO2Min: 95,
     checkInMinutes: 15,
     buddyRequired: false,
     label: 'Standard monitoring',
   },
   alcohol: {
     hrLow: 60,
-    hrHigh: 115,
-    spO2Min: 96,
+    hrHigh: 105,
+    spO2Min: 94,
     checkInMinutes: 8,
     buddyRequired: true,
     label: 'Elevated vigilance',

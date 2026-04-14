@@ -78,18 +78,18 @@ export interface SensorStatus {
 export const getSensorStatus = (sensor: SensorData): SensorStatus => {
   // CH4 (MQ4) thresholds — PPM based
   const ch4: SafetyStatus =
-    sensor.ch4 >= 5000 ? 'danger' :
-    sensor.ch4 >= 1000 ? 'warning' : 'safe';
+    sensor.ch4 >= 10000 ? 'danger' :
+    sensor.ch4 >= 5000 ? 'warning' : 'safe';
 
   // CO (MQ7) thresholds — PPM based
   const h2s: SafetyStatus =
-    sensor.h2s >= 200 ? 'danger' :
-    sensor.h2s >= 50  ? 'warning' : 'safe';
+    sensor.h2s >= 50 ? 'danger' :
+    sensor.h2s >= 30 ? 'warning' : 'safe';
 
   // Heart rate
   const heartRate: SafetyStatus =
-    sensor.heartRate > 0 && (sensor.heartRate < 50 || sensor.heartRate > 130) ? 'danger' :
-    sensor.heartRate > 0 && (sensor.heartRate < 60 || sensor.heartRate > 120) ? 'warning' : 'safe';
+    sensor.heartRate > 0 && (sensor.heartRate < 50 || sensor.heartRate > 120) ? 'danger' :
+    sensor.heartRate > 0 && (sensor.heartRate < 60 || sensor.heartRate > 100) ? 'warning' : 'safe';
 
   // SpO2
   const spO2: SafetyStatus =
