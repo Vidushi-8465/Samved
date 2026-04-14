@@ -199,7 +199,7 @@ export default function DashboardLayout() {
           <Tabs.Screen
             name="test"
             options={{
-              title: 'tes',
+              title: 'Simulation',
               tabBarIcon: ({ focused, color }) => (
                 <TabIcon name="test-tube" focused={focused} color={color} />
               ),
