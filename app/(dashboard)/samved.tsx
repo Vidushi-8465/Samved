@@ -186,13 +186,13 @@ function buildExplanation(r: SAMVEDReading, status: RiskLabel, dominant: string,
       'O₂ critically low': `Oxygen level (${r.o2_percent.toFixed(1)}%) has dropped below the critical 16% threshold — immediate hypoxic risk.`,
       'H₂S at IDLH level': `Hydrogen sulfide (${r.h2s_ppm.toFixed(1)} ppm) has reached IDLH (immediately dangerous to life). Irreversible health damage possible.`,
       'CO approaching IDLH': `Carbon monoxide (${r.co_ppm.toFixed(0)} ppm) is near the IDLH of 1200 ppm. Poisoning risk is high.`,
-      'CH₄ explosive risk zone': `Methane (${r.ch4_ppm.toFixed(0)} ppm) exceeds 10% LEL — explosive atmosphere present.`,
+      'CH₄ explosive risk zone': `Methane (${r.ch4_ppm.toFixed(0)} ppm) is in the explosive risk zone — atmosphere may ignite.`,
       'SpO₂ critically low – hypoxia': `Blood oxygen saturation (${r.spo2_percent}%) is critically low. Worker is likely experiencing hypoxia.`,
     };
     return map[override] ?? `Hard-limit breach: ${override}`;
   }
   if (status === 'SAFE') {
-    return `All 12 sensor parameters are within normal operating ranges. CH₄ is ${r.ch4_ppm.toFixed(0)} ppm (${((r.ch4_ppm/50000)*100).toFixed(1)}% LEL), O₂ is ${r.o2_percent.toFixed(1)}%, SpO₂ is ${r.spo2_percent}% and heart rate is ${r.heart_rate_bpm} BPM — no concerning trends detected.`;
+    return `All 12 sensor parameters are within normal operating ranges. CH₄ is ${r.ch4_ppm.toFixed(0)} ppm, O₂ is ${r.o2_percent.toFixed(1)}%, SpO₂ is ${r.spo2_percent}% and heart rate is ${r.heart_rate_bpm} BPM — no concerning trends detected.`;
   }
   const featureLabels: Record<string, string> = {
     spo2_delta: `SpO₂ is dropping (Δ${r.spo2_delta.toFixed(2)}% per reading)`,
@@ -204,7 +204,7 @@ function buildExplanation(r: SAMVEDReading, status: RiskLabel, dominant: string,
     ch4_delta: `Methane is rising quickly (Δ${r.ch4_delta.toFixed(0)} ppm/reading)`,
     h2s_delta: `H₂S concentration is increasing (Δ${r.h2s_delta.toFixed(1)} ppm/reading)`,
     co_ppm: `CO at ${r.co_ppm.toFixed(0)} ppm exceeds the 50 ppm OSHA TWA`,
-    ch4_ppm: `Methane at ${r.ch4_ppm.toFixed(0)} ppm (${((r.ch4_ppm/50000)*100).toFixed(1)}% LEL) is entering the warning zone`,
+    ch4_ppm: `Methane at ${r.ch4_ppm.toFixed(0)} ppm is entering the warning zone`,
     h2s_ppm: `H₂S at ${r.h2s_ppm.toFixed(1)} ppm is approaching the 20 ppm OSHA ceiling`,
     motion_state: `Worker is stationary — possible distress or incapacitation`,
   };

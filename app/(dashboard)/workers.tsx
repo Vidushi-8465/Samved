@@ -25,7 +25,19 @@ export const THRESHOLDS = {
   sober: {
     hrLow: 60,
     hrHigh: 100,
+    hrWarningLow: 60,
+    hrWarningHigh: 100,
+    hrDangerLow: 50,
+    hrDangerHigh: 120,
     spO2Min: 95,
+    spO2WarningMin: 95,
+    spO2DangerMin: 90,
+    coWarningMin: 30,
+    coDangerMin: 50,
+    h2sWarningMin: 10,
+    h2sDangerMin: 20,
+    ch4WarningMin: 5000,
+    ch4DangerMin: 10000,
     checkInMinutes: 15,
     buddyRequired: false,
     label: 'Standard monitoring',
@@ -33,7 +45,19 @@ export const THRESHOLDS = {
   alcohol: {
     hrLow: 60,
     hrHigh: 105,
+    hrWarningLow: 60,
+    hrWarningHigh: 105,
+    hrDangerLow: 55,
+    hrDangerHigh: 115,
     spO2Min: 94,
+    spO2WarningMin: 94,
+    spO2DangerMin: 88,
+    coWarningMin: 20,
+    coDangerMin: 40,
+    h2sWarningMin: 8,
+    h2sDangerMin: 15,
+    ch4WarningMin: 2500,
+    ch4DangerMin: 7500,
     checkInMinutes: 8,
     buddyRequired: true,
     label: 'Elevated vigilance',
@@ -83,20 +107,36 @@ function ThresholdPanel({ state }: { state: SobrietyState }) {
 
       <View style={styles.thresholdGrid}>
         <View style={styles.thresholdItem}>
-          <Text style={styles.thresholdItemLabel}>HR alert (low)</Text>
-          <Text style={[styles.thresholdItemValue, { color: accent }]}>below {t.hrLow} bpm</Text>
+          <Text style={styles.thresholdItemLabel}>Heart rate</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>Warn {t.hrWarningLow}-{t.hrWarningHigh} bpm</Text>
         </View>
         <View style={styles.thresholdItem}>
-          <Text style={styles.thresholdItemLabel}>HR alert (high)</Text>
-          <Text style={[styles.thresholdItemValue, { color: accent }]}>above {t.hrHigh} bpm</Text>
+          <Text style={styles.thresholdItemLabel}>Heart rate danger</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`< ${t.hrDangerLow} or > ${t.hrDangerHigh} bpm`}</Text>
         </View>
         <View style={styles.thresholdItem}>
-          <Text style={styles.thresholdItemLabel}>SpO2 alert</Text>
-          <Text style={[styles.thresholdItemValue, { color: accent }]}>below {t.spO2Min}%</Text>
+          <Text style={styles.thresholdItemLabel}>SpO2</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`Warn ${t.spO2DangerMin}-${t.spO2WarningMin - 1}%`}</Text>
+        </View>
+        <View style={styles.thresholdItem}>
+          <Text style={styles.thresholdItemLabel}>SpO2 danger</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`< ${t.spO2DangerMin}%`}</Text>
+        </View>
+        <View style={styles.thresholdItem}>
+          <Text style={styles.thresholdItemLabel}>CO (ppm)</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`Warn >= ${t.coWarningMin}, Danger > ${t.coDangerMin}`}</Text>
+        </View>
+        <View style={styles.thresholdItem}>
+          <Text style={styles.thresholdItemLabel}>H2S (ppm)</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`Warn >= ${t.h2sWarningMin}, Danger > ${t.h2sDangerMin}`}</Text>
+        </View>
+        <View style={styles.thresholdItem}>
+          <Text style={styles.thresholdItemLabel}>CH4 (ppm)</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>{`Warn >= ${t.ch4WarningMin}, Danger >= ${t.ch4DangerMin}`}</Text>
         </View>
         <View style={styles.thresholdItem}>
           <Text style={styles.thresholdItemLabel}>Check-in</Text>
-          <Text style={[styles.thresholdItemValue, { color: accent }]}>every {t.checkInMinutes} min</Text>
+          <Text style={[styles.thresholdItemValue, { color: accent }]}>Every {t.checkInMinutes} min</Text>
         </View>
       </View>
 

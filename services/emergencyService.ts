@@ -40,7 +40,7 @@ function buildRecipients(context: EscalationContext): AlertRecipient[] {
         ...(context.extraRecipients ?? []),
       ].filter((recipient): recipient is string => !!recipient && recipient.trim().length > 0)
     )
-  );
+  );  
 }
 
 function buildMessage(alert: Alert, context: EscalationContext): string {

@@ -13,13 +13,19 @@ const toBool = (value: unknown): boolean => {
   return false;
 };
 
-const readSosTriggered = (raw: any): boolean =>
-  toBool(raw?.sos) ||
-  toBool(raw?.sos_button) ||
-  toBool(raw?.sos_pressed) ||
-  toBool(raw?.sos_triggered) ||
-  toBool(raw?.panic) ||
-  toBool(raw?.panic_button);
+const readSosTriggered = (raw: any): boolean => {
+  // Prefer explicit SOS state if present so stale alias fields do not keep SOS stuck ON.
+  if (raw?.sos !== undefined && raw?.sos !== null) return toBool(raw.sos);
+  if (raw?.sos_triggered !== undefined && raw?.sos_triggered !== null) return toBool(raw.sos_triggered);
+  if (raw?.sosTriggered !== undefined && raw?.sosTriggered !== null) return toBool(raw.sosTriggered);
+
+  return (
+    toBool(raw?.sos_button) ||
+    toBool(raw?.sos_pressed) ||
+    toBool(raw?.panic) ||
+    toBool(raw?.panic_button)
+  );
+};
 
 // ── Sensor Data — matches exactly what receiver pushes ────────
 export interface SensorData {
@@ -40,6 +46,7 @@ export interface SensorData {
   motionAlert: number;    // 0=normal 1=fall 2=inactive 3=tilt 4=multiple
   fallDetected: boolean;
   fallAlert?: boolean;
+  fallPending?: boolean;
   workerPosture: string;  // standing | stationary | tilted | fallen
   sosTriggered: boolean;
   sosAlert?: boolean;
@@ -52,6 +59,23 @@ export interface SensorData {
   lastGpsLat: number;
   lastGpsLng: number;
   batteryLevel?: number;
+  thresholds?: {
+    hrLow?: number;
+    hrHigh?: number;
+    hrWarningLow?: number;
+    hrWarningHigh?: number;
+    hrDangerLow?: number;
+    hrDangerHigh?: number;
+    spO2Min?: number;
+    spO2WarningMin?: number;
+    spO2DangerMin?: number;
+    coWarningMin?: number;
+    coDangerMin?: number;
+    h2sWarningMin?: number;
+    h2sDangerMin?: number;
+    ch4WarningMin?: number;
+    ch4DangerMin?: number;
+  };
   // Mode + status
   mode: 'premonitoring' | 'monitoring';
   safetyStatus: string;
@@ -103,6 +127,11 @@ export const SENSOR_THRESHOLDS = {
     dangerMin: 50,
     unit: 'ppm',
   },
+  h2s: {
+    warningMin: 10,
+    dangerMin: 20,
+    unit: 'ppm',
+  },
   waterLevel: {
     dangerMax: 10,
     warningMax: 50,
@@ -139,18 +168,42 @@ export interface SensorStatus {
 }
 
 export const getSensorStatus = (sensor: SensorData): SensorStatus => {
+  const custom = sensor.thresholds;
+  const ch4WarningMin = Number(custom?.ch4WarningMin ?? SENSOR_THRESHOLDS.ch4.warningMin);
+  const ch4DangerMin = Number(custom?.ch4DangerMin ?? SENSOR_THRESHOLDS.ch4.dangerMin);
+  const coWarningMin = Number(custom?.coWarningMin ?? SENSOR_THRESHOLDS.co.warningMin);
+  const coDangerMin = Number(custom?.coDangerMin ?? SENSOR_THRESHOLDS.co.dangerMin);
+  const h2sWarningMin = Number(custom?.h2sWarningMin ?? SENSOR_THRESHOLDS.h2s.warningMin);
+  const h2sDangerMin = Number(custom?.h2sDangerMin ?? SENSOR_THRESHOLDS.h2s.dangerMin);
+  const hrWarningLow = Number(custom?.hrWarningLow ?? custom?.hrLow ?? SENSOR_THRESHOLDS.heartRate.warningLow);
+  const hrWarningHigh = Number(custom?.hrWarningHigh ?? custom?.hrHigh ?? SENSOR_THRESHOLDS.heartRate.warningHigh);
+  const hrDangerLow = Number(custom?.hrDangerLow ?? ((custom?.hrLow ?? SENSOR_THRESHOLDS.heartRate.warningLow) - 10));
+  const hrDangerHigh = Number(custom?.hrDangerHigh ?? SENSOR_THRESHOLDS.heartRate.dangerHigh);
+  const spO2WarningMin = Number(custom?.spO2WarningMin ?? custom?.spO2Min ?? SENSOR_THRESHOLDS.spO2.warningMin);
+  const spO2DangerMin = Number(custom?.spO2DangerMin ?? ((custom?.spO2Min ?? SENSOR_THRESHOLDS.spO2.warningMin) - 5));
+
   const coValue = sensor.co ?? sensor.h2s;
   const waterDistanceCm = sensor.waterLevel ?? 0;
 
   // CH4 (MQ4) thresholds — PPM based
   const ch4: SafetyStatus =
-    sensor.ch4 >= SENSOR_THRESHOLDS.ch4.dangerMin ? 'danger' :
-    sensor.ch4 >= SENSOR_THRESHOLDS.ch4.warningMin ? 'warning' : 'safe';
+    sensor.ch4 >= ch4DangerMin ? 'danger' :
+    sensor.ch4 >= ch4WarningMin ? 'warning' : 'safe';
 
   // CO (MQ7) thresholds — PPM based
+  const coStatus: SafetyStatus =
+    coValue > coDangerMin ? 'danger' :
+    coValue >= coWarningMin ? 'warning' : 'safe';
+
+  const h2sReading = Number(sensor.h2s ?? 0);
+  const h2sStatus: SafetyStatus =
+    h2sReading > h2sDangerMin ? 'danger' :
+    h2sReading >= h2sWarningMin ? 'warning' : 'safe';
+
+  // Represent the most conservative gas state in the legacy `h2s` channel.
   const h2s: SafetyStatus =
-    coValue >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' :
-    coValue >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
+    coStatus === 'danger' || h2sStatus === 'danger' ? 'danger' :
+    coStatus === 'warning' || h2sStatus === 'warning' ? 'warning' : 'safe';
 
   // Water distance thresholds — smaller distance means higher risk
   const waterLevel: SafetyStatus =
@@ -159,13 +212,13 @@ export const getSensorStatus = (sensor: SensorData): SensorStatus => {
 
   // Heart rate
   const heartRate: SafetyStatus =
-    sensor.heartRate > 0 && (sensor.heartRate < SENSOR_THRESHOLDS.heartRate.dangerLow || sensor.heartRate > SENSOR_THRESHOLDS.heartRate.dangerHigh) ? 'danger' :
-    sensor.heartRate > 0 && (sensor.heartRate < SENSOR_THRESHOLDS.heartRate.warningLow || sensor.heartRate > SENSOR_THRESHOLDS.heartRate.warningHigh) ? 'warning' : 'safe';
+    sensor.heartRate > 0 && (sensor.heartRate < hrDangerLow || sensor.heartRate > hrDangerHigh) ? 'danger' :
+    sensor.heartRate > 0 && (sensor.heartRate < hrWarningLow || sensor.heartRate > hrWarningHigh) ? 'warning' : 'safe';
 
   // SpO2
   const spO2: SafetyStatus =
-    sensor.spO2 > 0 && sensor.spO2 < SENSOR_THRESHOLDS.spO2.dangerMin ? 'danger' :
-    sensor.spO2 > 0 && sensor.spO2 < SENSOR_THRESHOLDS.spO2.warningMin ? 'warning' : 'safe';
+    sensor.spO2 > 0 && sensor.spO2 < spO2DangerMin ? 'danger' :
+    sensor.spO2 > 0 && sensor.spO2 < spO2WarningMin ? 'warning' : 'safe';
 
   // Fall / motion
   const fall: SafetyStatus =
@@ -230,6 +283,7 @@ export const listenToWorkerSensor = (
         locationLabel: raw.location_label ?? '—',
         lastGpsLat: raw.gps_lat ?? 0,
         lastGpsLng: raw.gps_lng ?? 0,
+        thresholds: raw.thresholds ?? undefined,
         mode: raw.mode ?? 'premonitoring',
         safetyStatus: raw.status ?? 'NORMAL',
         lastUpdated: raw.last_seen ?? 0,
@@ -260,7 +314,7 @@ export const listenToAllSensors = (
             workerId: id,
             ch4: raw.mq4_ppm ?? 0,           // CH4 from MQ4
             h2s: raw.mq7_ppm ?? 0,           // H2S from MQ7
-            co: 0,
+            co: raw.mq7_ppm ?? 0,
             gasAlert: raw.gas_alert ?? 0,
             gasWarming: raw.gasWarming ?? false,
             waterLevel: raw.water_level ?? 0,
@@ -277,6 +331,7 @@ export const listenToAllSensors = (
             locationLabel: raw.location_label ?? '—',
             lastGpsLat: raw.gps_lat ?? 0,
             lastGpsLng: raw.gps_lng ?? 0,
+            thresholds: raw.thresholds ?? undefined,
             mode: raw.mode ?? 'premonitoring',
             safetyStatus: raw.status ?? 'NORMAL',
             lastUpdated: raw.last_seen ?? 0,

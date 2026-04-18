@@ -17,7 +17,7 @@ import {
 import { logoutManager } from '@/services/authService';
 import { ref, onValue, off } from 'firebase/database';
 import { rtdb } from '@/services/firebase';
-import { playAlertSound } from '@/utils/alertSound';
+import { playAlertSound, stopAlertSound } from '@/utils/alertSound';
 import { isHiddenWorker } from '@/constants/hiddenWorkers';
 import { THRESHOLDS } from './workers'; // ← import shared THRESHOLDS from workers
 import { triggerBuzzer } from '@/services/buzzerService';
@@ -32,7 +32,19 @@ type SobrietyState = 'sober' | 'alcohol';
 type ActiveThresholds = {
   hrLow: number;
   hrHigh: number;
+  hrWarningLow: number;
+  hrWarningHigh: number;
+  hrDangerLow: number;
+  hrDangerHigh: number;
   spO2Min: number;
+  spO2WarningMin: number;
+  spO2DangerMin: number;
+  coWarningMin: number;
+  coDangerMin: number;
+  h2sWarningMin: number;
+  h2sDangerMin: number;
+  ch4WarningMin: number;
+  ch4DangerMin: number;
   checkInMinutes: number;
   buddyRequired: boolean;
   label: string;
@@ -369,8 +381,8 @@ function WorkerConditionCard({
   // Determine HR status using active (sobriety-aware) thresholds
   const hrStatus: SafetyStatus =
     hrValue <= 0 ? 'safe'
-    : hrValue < activeThresholds.hrLow || hrValue > activeThresholds.hrHigh ? 'danger'
-    : hrValue < activeThresholds.hrLow + 10 || hrValue > activeThresholds.hrHigh - 10 ? 'warning'
+    : hrValue < activeThresholds.hrDangerLow || hrValue > activeThresholds.hrDangerHigh ? 'danger'
+    : hrValue < activeThresholds.hrWarningLow || hrValue > activeThresholds.hrWarningHigh ? 'warning'
     : 'safe';
     
   // Use the same SpO2 logic as getSensorStatus for consistency
@@ -411,7 +423,7 @@ function WorkerConditionCard({
           </Text>
           <Text style={wc.vitalUnit}>BPM</Text>
           <Text style={wc.vitalHint}>
-            {activeThresholds.hrLow}–{activeThresholds.hrHigh} bpm
+            safe {activeThresholds.hrLow}-{activeThresholds.hrHigh} bpm
           </Text>
         </View>
         <View style={wc.vitalDivider} />
@@ -422,7 +434,7 @@ function WorkerConditionCard({
           </Text>
           <Text style={wc.vitalUnit}>SpO2 %</Text>
           <Text style={wc.vitalHint}>
-            min {activeThresholds.spO2Min}%
+            safe >= {activeThresholds.spO2Min}%
           </Text>
         </View>
       </View>
@@ -651,6 +663,7 @@ function ThresholdCard({ sensor, activeThresholds }: {
 }) {
   const status = sensor ? getSensorStatus(sensor) : null;
   const coValue = sensor?.co ?? sensor?.h2s ?? 0;
+  const h2sValue = sensor?.h2s ?? 0;
   const hasFall = !!sensor?.fallDetected || !!sensor?.sosTriggered;
 
   const hrValue = sensor?.heartRate ?? 0;
@@ -659,15 +672,31 @@ function ThresholdCard({ sensor, activeThresholds }: {
   // Compute HR status using sobriety-aware thresholds
   const hrStatus: SafetyStatus =
     hrValue <= 0 ? 'safe'
-    : hrValue < activeThresholds.hrLow || hrValue > activeThresholds.hrHigh ? 'danger'
-    : hrValue < activeThresholds.hrLow + 10 || hrValue > activeThresholds.hrHigh - 10 ? 'warning'
+    : hrValue < activeThresholds.hrDangerLow || hrValue > activeThresholds.hrDangerHigh ? 'danger'
+    : hrValue < activeThresholds.hrWarningLow || hrValue > activeThresholds.hrWarningHigh ? 'warning'
     : 'safe';
 
   // Compute SpO2 status using sobriety-aware thresholds
   const spO2Status: SafetyStatus =
     spO2Value <= 0 ? 'safe'
-    : spO2Value < activeThresholds.spO2Min ? 'danger'
-    : spO2Value < activeThresholds.spO2Min + 2 ? 'warning'
+    : spO2Value < activeThresholds.spO2DangerMin ? 'danger'
+    : spO2Value < activeThresholds.spO2WarningMin ? 'warning'
+    : 'safe';
+
+  const ch4Value = sensor?.ch4 ?? 0;
+  const ch4Status: SafetyStatus =
+    ch4Value >= activeThresholds.ch4DangerMin ? 'danger'
+    : ch4Value >= activeThresholds.ch4WarningMin ? 'warning'
+    : 'safe';
+
+  const coStatus: SafetyStatus =
+    coValue > activeThresholds.coDangerMin ? 'danger'
+    : coValue >= activeThresholds.coWarningMin ? 'warning'
+    : 'safe';
+
+  const h2sStatus: SafetyStatus =
+    h2sValue > activeThresholds.h2sDangerMin ? 'danger'
+    : h2sValue >= activeThresholds.h2sWarningMin ? 'warning'
     : 'safe';
 
   const rows: Array<{
@@ -679,24 +708,31 @@ function ThresholdCard({ sensor, activeThresholds }: {
   }> = [
     {
       label: 'Methane (CH₄)',
-      current: sensor ? `${sensor.ch4.toFixed(1)} % LEL` : 'No data',
-      statusLabel: !sensor ? 'No Data' : status?.ch4 === 'danger' ? 'Critical' : status?.ch4 === 'warning' ? 'Warning' : 'Safe',
-      limits: `Safe: < ${SENSOR_THRESHOLDS.ch4.warningMin} ppm  |  Warning: ${SENSOR_THRESHOLDS.ch4.warningMin}-${SENSOR_THRESHOLDS.ch4.dangerMin - 1} ppm  |  Danger: ≥ ${SENSOR_THRESHOLDS.ch4.dangerMin} ppm`,
-      st: status?.ch4 ?? 'safe',
+      current: sensor ? `${sensor.ch4.toFixed(1)} ppm` : 'No data',
+      statusLabel: !sensor ? 'No Data' : ch4Status === 'danger' ? 'Critical' : ch4Status === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${activeThresholds.ch4WarningMin} ppm  |  Warning: ${activeThresholds.ch4WarningMin}-${activeThresholds.ch4DangerMin - 1} ppm  |  Danger: >= ${activeThresholds.ch4DangerMin} ppm`,
+      st: ch4Status,
     },
     {
       label: 'CO (MQ7)',
       current: sensor ? `${coValue.toFixed(1)} ppm` : 'No data',
-      statusLabel: !sensor ? 'No Data' : status?.h2s === 'danger' ? 'Critical' : status?.h2s === 'warning' ? 'Warning' : 'Safe',
-      limits: `Safe: < ${SENSOR_THRESHOLDS.co.warningMin} ppm  |  Warning: ${SENSOR_THRESHOLDS.co.warningMin}-${SENSOR_THRESHOLDS.co.dangerMin - 1} ppm  |  Danger: ≥ ${SENSOR_THRESHOLDS.co.dangerMin} ppm`,
-      st: status?.h2s ?? 'safe',
+      statusLabel: !sensor ? 'No Data' : coStatus === 'danger' ? 'Critical' : coStatus === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${activeThresholds.coWarningMin} ppm  |  Warning: ${activeThresholds.coWarningMin}-${activeThresholds.coDangerMin} ppm  |  Danger: > ${activeThresholds.coDangerMin} ppm`,
+      st: coStatus,
+    },
+    {
+      label: 'Hydrogen Sulfide (H₂S)',
+      current: sensor ? `${h2sValue.toFixed(1)} ppm` : 'No data',
+      statusLabel: !sensor ? 'No Data' : h2sStatus === 'danger' ? 'Critical' : h2sStatus === 'warning' ? 'Warning' : 'Safe',
+      limits: `Safe: < ${activeThresholds.h2sWarningMin} ppm  |  Warning: ${activeThresholds.h2sWarningMin}-${activeThresholds.h2sDangerMin} ppm  |  Danger: > ${activeThresholds.h2sDangerMin} ppm`,
+      st: h2sStatus,
     },
     {
       label: 'SpO₂',
       current: sensor ? `${spO2Value}%` : 'No data',
       statusLabel: !sensor ? 'No Data' : spO2Status === 'danger' ? 'Critical' : spO2Status === 'warning' ? 'Warning' : 'Safe',
       // ← Uses sobriety-aware min
-      limits: `Safe: ≥ ${activeThresholds.spO2Min}%  |  Warning: ${activeThresholds.spO2Min - 2}-${activeThresholds.spO2Min - 1}%  |  Danger: < ${activeThresholds.spO2Min - 2}%`,
+      limits: `Safe: >= ${activeThresholds.spO2WarningMin}%  |  Warning: ${activeThresholds.spO2DangerMin}-${activeThresholds.spO2WarningMin - 1}%  |  Danger: < ${activeThresholds.spO2DangerMin}%`,
       st: spO2Status,
     },
     {
@@ -704,7 +740,7 @@ function ThresholdCard({ sensor, activeThresholds }: {
       current: sensor ? `${hrValue} BPM` : 'No data',
       statusLabel: !sensor ? 'No Data' : hrStatus === 'danger' ? 'Critical' : hrStatus === 'warning' ? 'Warning' : 'Safe',
       // ← Uses sobriety-aware HR limits
-      limits: `Safe: ${activeThresholds.hrLow}–${activeThresholds.hrHigh} BPM  |  Warning: near limits  |  Danger: < ${activeThresholds.hrLow} or > ${activeThresholds.hrHigh} BPM`,
+      limits: `Safe: ${activeThresholds.hrLow}-${activeThresholds.hrHigh} BPM  |  Warning: outside safe range  |  Danger: < ${activeThresholds.hrDangerLow} or > ${activeThresholds.hrDangerHigh} BPM`,
       st: hrStatus,
     },
     {
@@ -785,7 +821,7 @@ function GasTrendCard({ sensor }: { sensor?: SensorData | null }) {
 
   const chartW = Math.min(SCREEN_WIDTH - 80, 400);
   const chartH = 90;
-  const maxVal = 50;
+  const maxVal = Math.max(100, ...history.map((h) => Math.max(h.ch4, h.h2s, h.co)));
 
   return (
     <View style={gc.card}>
@@ -935,7 +971,8 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
     { label: 'Level 3', ch4: data.level3_ch4 ?? 0, co: data.level3_co ?? 0, water: data.level3_water ?? 0 },
   ] : [];
 
-  const ch4Status = (v: number) => v >= 20 ? 'danger' : v >= 10 ? 'warning' : 'safe';
+  const ch4Status = (v: number) =>
+    v >= SENSOR_THRESHOLDS.ch4.dangerMin ? 'danger' : v >= SENSOR_THRESHOLDS.ch4.warningMin ? 'warning' : 'safe';
   const coStatus  = (v: number) =>
     v >= SENSOR_THRESHOLDS.co.dangerMin ? 'danger' : v >= SENSOR_THRESHOLDS.co.warningMin ? 'warning' : 'safe';
   const waterStatus = (v: number) => {
@@ -990,7 +1027,7 @@ function PreMonitoringCard({ workerId }: { workerId: string }) {
         <View style={pm.table}>
           <View style={pm.tableHead}>
             <Text style={[pm.th, { flex: 1 }]}>DEPTH</Text>
-            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (% LEL)</Text>
+            <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CH₄ (PPM)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>CO (PPM)</Text>
             <Text style={[pm.th, { flex: 1, textAlign: 'center' }]}>Water (cm)</Text>
           </View>
@@ -1158,6 +1195,7 @@ export default function OverviewScreen() {
 
     const sensor = sensors[selectedWorkerId];
     const status = getSensorStatus(sensor);
+    const hasLowHeartRate = sensor.heartRate > 0 && sensor.heartRate < 60;
     
     // Show warning banner if any sensor is in warning state
     const hasWarning = status.overall === 'warning' || 
@@ -1167,7 +1205,7 @@ export default function OverviewScreen() {
       status.heartRate === 'warning' || 
       status.spO2 === 'warning';
 
-    setShowWarning(hasWarning);
+    setShowWarning(hasWarning || hasLowHeartRate);
   }, [selectedWorkerId, sensors]);
 
   // Danger detection logic (gas levels only)
@@ -1181,7 +1219,7 @@ export default function OverviewScreen() {
     const status = getSensorStatus(sensor);
     
     // Show danger banner only for gas levels (CH4, H2S, CO) in danger state
-    const hasGasDanger = status.ch4 === 'danger' || status.h2s === 'danger' || status.co === 'danger';
+    const hasGasDanger = status.ch4 === 'danger' || status.h2s === 'danger';
 
     setShowDanger(hasGasDanger);
   }, [selectedWorkerId, sensors]);
@@ -1327,7 +1365,16 @@ export default function OverviewScreen() {
 
   return (
     <SafeAreaView style={main.safe} edges={['top']}>
-      <SOSModal alerts={alerts} sensorEmergencies={sensorEmergencies} visible={showSOS} onDismiss={() => { setShowSOS(false); router.push('/(dashboard)/alerts'); }} />
+      <SOSModal
+        alerts={alerts}
+        sensorEmergencies={sensorEmergencies}
+        visible={showSOS}
+        onDismiss={async () => {
+          await stopAlertSound();
+          setShowSOS(false);
+          router.push('/(dashboard)/alerts');
+        }}
+      />
       
       {/* Warning Banner */}
       <WarningBanner 
@@ -1459,7 +1506,7 @@ export default function OverviewScreen() {
 
         {/* ENV CARDS */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 4 }}>
-          <EnvCard label="METHANE (CH₄)" value={s ? s.ch4.toFixed(1) : '—'} unit="% LEL" status={st?.ch4 ?? 'safe'} />
+          <EnvCard label="METHANE (CH₄)" value={s ? s.ch4.toFixed(1) : '—'} unit="ppm" status={st?.ch4 ?? 'safe'} />
           <EnvCard label="CARBON MONOXIDE (CO)" value={s ? s.h2s.toFixed(1) : '—'} unit="ppm" status={st?.h2s ?? 'safe'} />
           <EnvCard label="HYDROGEN SULFIDE (H₂S)" value={s ? String(s.co ?? 0) : '—'} unit="ppm" status={(s?.co ?? 0) > 50 ? 'danger' : (s?.co ?? 0) > 25 ? 'warning' : 'safe'} />
           <EnvCard label="OXYGEN (SpO₂)" value={s ? String(s.spO2) : '—'} unit="%" status={st?.spO2 ?? 'safe'} />

@@ -3,7 +3,7 @@ import { ref, onValue } from 'firebase/database';
 import { Timestamp } from 'firebase/firestore';
 import { rtdb } from '@/services/firebase';
 import { ManagerProfile } from '@/services/authService';
-import { SensorData, WorkerProfile, Alert, SENSOR_THRESHOLDS } from '@/services/sensorService';
+import { SensorData, WorkerProfile, Alert, getSensorStatus } from '@/services/sensorService';
 import * as Notifications from 'expo-notifications';
 import { AppState as RNAppState } from 'react-native';
 import { playAlertSound } from '@/utils/alertSound';
@@ -12,6 +12,9 @@ import { isHiddenWorker } from '@/constants/hiddenWorkers';
 
 let seenAlertIds = new Set<string>();
 let escalatedAlertIds = new Set<string>();
+const SOS_FALL_GRACE_MS = 10_000;
+const pendingSosSinceByWorker = new Map<string, number>();
+const lastEmergencyStateByWorker = new Map<string, 'none' | 'sos' | 'fall'>();
 
 const toBool = (value: unknown): boolean => {
   if (typeof value === 'boolean') return value;
@@ -23,13 +26,19 @@ const toBool = (value: unknown): boolean => {
   return false;
 };
 
-const readSosTriggered = (raw: any): boolean =>
-  toBool(raw?.sos) ||
-  toBool(raw?.sos_button) ||
-  toBool(raw?.sos_pressed) ||
-  toBool(raw?.sos_triggered) ||
-  toBool(raw?.panic) ||
-  toBool(raw?.panic_button);
+const readSosTriggered = (raw: any): boolean => {
+  // Prefer explicit SOS state if present so stale alias fields do not keep SOS stuck ON.
+  if (raw?.sos !== undefined && raw?.sos !== null) return toBool(raw.sos);
+  if (raw?.sos_triggered !== undefined && raw?.sos_triggered !== null) return toBool(raw.sos_triggered);
+  if (raw?.sosTriggered !== undefined && raw?.sosTriggered !== null) return toBool(raw.sosTriggered);
+
+  return (
+    toBool(raw?.sos_button) ||
+    toBool(raw?.sos_pressed) ||
+    toBool(raw?.panic) ||
+    toBool(raw?.panic_button)
+  );
+};
 
 async function triggerNotification(alert: Alert) {
   await Notifications.scheduleNotificationAsync({
@@ -140,7 +149,29 @@ export const useStore = create<AppState>((set, get) => ({
       const generatedAlerts: Alert[] = [];
 
       for (const id in data) {
+        const nowMs = Date.now();
         const s = data[id];
+
+        // ─── Read motionAlert from Firebase ───────────────────────────────────
+        // Arduino sends:
+        //   motionAlert 0 = normal
+        //   motionAlert 1 = CONFIRMED fall
+        //   motionAlert 2 = inactive
+        //   motionAlert 3 = tilt
+        //   motionAlert 4 = confirmed fall + tilt
+        //   motionAlert 5 = PENDING fall (10-sec grace window — NO alert)
+        //
+        // Arduino writes `fall: true` only for motionAlert 1 or 4.
+        // Arduino writes `fall_pending: true` only for motionAlert 5.
+        // We use motionAlert directly so we can precisely gate alerts.
+        const motionAlert = Number(s.motion_alert ?? 0);
+
+        // A fall is CONFIRMED only when motionAlert is 1 or 4.
+        // motionAlert 5 = PENDING (grace window still running) → must NOT trigger any alert.
+        const isConfirmedFall = motionAlert === 1 || motionAlert === 4;
+
+        // fall_pending is purely a UI indicator — never generates an alert.
+        const isFallPending = motionAlert === 5 || toBool(s.fall_pending);
 
         const sensor: SensorData = {
           heartRate: s.hr,
@@ -151,7 +182,8 @@ export const useStore = create<AppState>((set, get) => ({
           rssi: s.rssi,
           lastGpsLat: s.gps_lat,
           lastGpsLng: s.gps_lng,
-          fallDetected: s.fall,
+          // fallDetected reflects CONFIRMED falls only — never the pending state
+          fallDetected: isConfirmedFall,
           sosTriggered: readSosTriggered(s),
           workerPosture: s.posture,
           mode: s.mode,
@@ -162,12 +194,16 @@ export const useStore = create<AppState>((set, get) => ({
           workerId: id,
           gasAlert: Number(s.gasAlert ?? 0),
           fingerOn: s.fingerOn || false,
-          motionAlert: s.motionAlert || false,
-          fallAlert: s.fallAlert || false,
+          motionAlert: motionAlert,
+          // fallAlert is true only for CONFIRMED falls — pending state is excluded
+          fallAlert: isConfirmedFall,
           sosAlert: toBool(s.sosAlert) || readSosTriggered(s),
           batteryLevel: s.batteryLevel || 100,
+          thresholds: s.thresholds || undefined,
           safetyStatus: s.status || 'NORMAL',
           lastUpdated: s.last_seen || Date.now(),
+          // Expose pending state for dashboard UI indicator (no alert fires from this)
+          fallPending: isFallPending,
         };
 
         if (isHiddenWorker(id)) {
@@ -177,6 +213,8 @@ export const useStore = create<AppState>((set, get) => ({
         mapped[id] = sensor;
 
         // 🔥 GENERATE ALERTS FROM SENSOR
+
+        // ── Gas alerts ────────────────────────────────────────────────────────
         const gasAlertLevel = Number(sensor.gasAlert ?? 0);
         if (gasAlertLevel === 1) {
           generatedAlerts.push({
@@ -253,12 +291,12 @@ export const useStore = create<AppState>((set, get) => ({
           );
         }
 
+        // ── Heart rate alerts ─────────────────────────────────────────────────
+        const sensorStatus = getSensorStatus(sensor);
+
         const heartRate = Number(sensor.heartRate ?? 0);
         if (heartRate > 0) {
-          const heartRateType =
-            heartRate < SENSOR_THRESHOLDS.heartRate.dangerLow || heartRate > SENSOR_THRESHOLDS.heartRate.dangerHigh
-              ? 'HEARTRATE'
-              : null;
+          const heartRateType = sensorStatus.heartRate === 'danger' ? 'HEARTRATE' : null;
 
           if (heartRateType) {
             generatedAlerts.push({
@@ -275,12 +313,13 @@ export const useStore = create<AppState>((set, get) => ({
           }
         }
 
+        // ── SpO2 alerts ───────────────────────────────────────────────────────
         const spO2 = Number(sensor.spO2 ?? 0);
         if (spO2 > 0) {
           const spO2Type =
-            spO2 < SENSOR_THRESHOLDS.spO2.dangerMin
+            sensorStatus.spO2 === 'danger'
               ? 'SPO2_CRITICAL'
-              : spO2 < SENSOR_THRESHOLDS.spO2.warningMin
+              : sensorStatus.spO2 === 'warning'
                 ? 'SPO2_LOW'
                 : null;
 
@@ -299,36 +338,71 @@ export const useStore = create<AppState>((set, get) => ({
           }
         }
 
-        const posture = (sensor.workerPosture ?? '').toLowerCase();
-        const hasFallEmergency = !!sensor.fallAlert || !!sensor.fallDetected || sensor.motionAlert === 1 || sensor.motionAlert === 4 || posture === 'fallen' || posture === 'fall';
-        const hasSosEmergency = !!sensor.sosAlert || !!sensor.sosTriggered;
-        const combinedEmergencyValue = hasFallEmergency && hasSosEmergency ? 'SOS+fall detected' : null;
+        // ── Fall / SOS emergency state machine ───────────────────────────────
+        //
+        // FALL STATE RULES (mirrors Arduino logic exactly):
+        //   motionAlert 5  → PENDING (grace window active)  → no alert, no state change
+        //   motionAlert 1/4 → CONFIRMED fall               → fire FALL alert once
+        //
+        // We deliberately do NOT use fallDetected / fallAlert booleans here because
+        // those were previously set from `s.fall` which could be stale.
+        // We drive everything from `motionAlert` (s.motion_alert) instead.
 
-        if (hasFallEmergency) {
-          generatedAlerts.push({
-            id: `${id}-fall-${Date.now()}`,
-            workerId: id,
-            type: 'FALL',
-            workerName: id,
-            zone: sensor.locationLabel || 'Unknown',
-            manholeId: sensor.manholeId || '—',
-            value: combinedEmergencyValue || 'Fall Detected',
-            resolved: false,
-            timestamp: Timestamp.now(),
-          } as Alert);
-        } else if (hasSosEmergency) {
-          generatedAlerts.push({
-            id: `${id}-sos-${Date.now()}`,
-            workerId: id,
-            type: 'SOS',
-            workerName: id,
-            zone: sensor.locationLabel || 'Unknown',
-            manholeId: sensor.manholeId || '—',
-            value: 'SOS Pressed',
-            resolved: false,
-            timestamp: Timestamp.now(),
-          } as Alert);
+        // isFallPending (motionAlert 5): skip entirely — don't update emergency state,
+        // don't push any alert. The 10-sec grace window is handled on the Arduino side;
+        // we just wait for it to resolve to confirmed (1/4) or cleared (0).
+        //
+        // Only process SOS or confirmed fall:
+        const hasFallEmergency = isConfirmedFall;
+        const hasSosEmergency  = !!sensor.sosAlert || !!sensor.sosTriggered;
+
+        // During a pending fall we freeze the emergency state — no transitions allowed.
+        if (!isFallPending) {
+          let effectiveEmergencyState: 'none' | 'sos' | 'fall' = 'none';
+
+          if (hasFallEmergency) {
+            effectiveEmergencyState = 'fall';
+            pendingSosSinceByWorker.delete(id);
+          } else if (hasSosEmergency) {
+            const pendingSince = pendingSosSinceByWorker.get(id) ?? nowMs;
+            pendingSosSinceByWorker.set(id, pendingSince);
+            if (nowMs - pendingSince >= SOS_FALL_GRACE_MS) {
+              effectiveEmergencyState = 'sos';
+            }
+          } else {
+            pendingSosSinceByWorker.delete(id);
+          }
+
+          const previousEmergencyState = lastEmergencyStateByWorker.get(id) ?? 'none';
+          lastEmergencyStateByWorker.set(id, effectiveEmergencyState);
+
+          if (effectiveEmergencyState === 'fall' && previousEmergencyState !== 'fall') {
+            generatedAlerts.push({
+              id: `${id}-fall-${nowMs}`,
+              workerId: id,
+              type: 'FALL',
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: 'Fall Detected',
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert);
+          } else if (effectiveEmergencyState === 'sos' && previousEmergencyState !== 'sos') {
+            generatedAlerts.push({
+              id: `${id}-sos-${nowMs}`,
+              workerId: id,
+              type: 'SOS',
+              workerName: id,
+              zone: sensor.locationLabel || 'Unknown',
+              manholeId: sensor.manholeId || '—',
+              value: 'SOS Pressed',
+              resolved: false,
+              timestamp: Timestamp.now(),
+            } as Alert);
+          }
         }
+        // else: motionAlert == 5 (pending) → do nothing, wait silently
       }
 
       set({ sensors: mapped });
